@@ -1,0 +1,76 @@
+# ReplayTrove git hygiene
+
+# ---------- Media outputs (never in git) ----------
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.flv
+*.wmv
+*.webm
+*.ts
+*.m4v
+*.m2ts
+*.mts
+*.mpg
+*.mpeg
+*.mxf
+*.3gp
+*.asf
+*.vob
+*.ogv
+*.divx
+
+# ---------- Audio/runtime captures ----------
+*.wav
+*.mp3
+*.aac
+*.flac
+
+# ---------- Logs and temp ----------
+*.log
+*.tmp
+*.temp
+*.bak
+*.old
+*.cache
+*.pid
+
+# ---------- Secrets / machine-local config ----------
+.env
+**/.env
+*.env
+**/*.env
+*.secret
+*.secrets
+*.local
+*.env.local
+*.key
+*.pem
+*.pfx
+
+# ---------- Python/cache junk if present ----------
+__pycache__/
+*.pyc
+
+# ---------- Bundled binaries (GitHub 100MB file limit) ----------
+/mpv/
+
+# ---------- ReplayTrove runtime directories ----------
+/clips/
+/clips_incoming/
+/clips_processing/
+/processed/
+/previews/
+/failed/
+/logs/
+/long_clips/
+/TEST CLIPS/
+
+# ---------- Ensure rt_system sources are tracked ----------
+!/rt_system/
+!/rt_system/**
+
+# Re-ignore env files under rt_system (negation above would otherwise force-add them)
+rt_system/**/.env
+rt_system/**/*.env
