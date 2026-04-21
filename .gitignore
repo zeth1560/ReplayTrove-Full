@@ -29,6 +29,10 @@
 
 # ---------- Logs and temp ----------
 *.log
+*.log.*
+scoreboard/logs/
+**/logs/*.log*
+*.zip
 *.tmp
 *.temp
 *.bak
