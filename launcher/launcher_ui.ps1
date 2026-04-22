@@ -102,11 +102,213 @@ function Stop-ProcessByNameSafe {
 $ObsDir = 'C:\Program Files\obs-studio\bin\64bit'
 $ObsExe = Join-Path $ObsDir 'obs64.exe'
 $ObsSentinel = Join-Path $env:APPDATA 'obs-studio\.sentinel'
-$StreamDeckExe = 'C:\Program Files\Elgato\StreamDeck\StreamDeck.exe'
 $CleanerScript = 'C:\ReplayTrove\cleaner\cleaner-bee.ps1'
+$ControlAppExe = if ($env:REPLAYTROVE_CONTROL_APP_EXE) {
+  $env:REPLAYTROVE_CONTROL_APP_EXE
+} elseif ($env:REPLAYTROVE_STREAMDECK_EXE) {
+  $env:REPLAYTROVE_STREAMDECK_EXE
+} else {
+  'C:\Program Files\Elgato\StreamDeck\StreamDeck.exe'
+}
+$ControlAppProcessName = if ($env:REPLAYTROVE_CONTROL_APP_NAME) {
+  $env:REPLAYTROVE_CONTROL_APP_NAME
+} else {
+  'StreamDeck'
+}
+$ControlAppArgs = if ($env:REPLAYTROVE_CONTROL_APP_ARGS) { $env:REPLAYTROVE_CONTROL_APP_ARGS } else { '' }
 $EncoderDir = if ($env:REPLAYTROVE_ENCODER_DIR) { $env:REPLAYTROVE_ENCODER_DIR } else { 'C:\ReplayTrove\encoder' }
 $LauncherUiBat = Join-Path $PSScriptRoot 'launcher_ui.bat'
 $LauncherUiPs1 = Join-Path $PSScriptRoot 'launcher_ui.ps1'
+$SupervisionOwnerLeasePath = Join-Path $PSScriptRoot 'supervision_owner_lease.json'
+$SupervisionStatusPath = Join-Path $PSScriptRoot 'supervision_status.json'
+$SupervisionStatusStaleSec = 15
+$LauncherManagedApps = @('Worker', 'logs2dropbox', 'Encoder', 'OBS', 'Scoreboard')
+$LauncherIntentsRoot = Join-Path $PSScriptRoot 'intents'
+$LauncherIntentsPendingDir = Join-Path $LauncherIntentsRoot 'pending'
+
+function Write-UiLog {
+  param([string]$Message)
+  $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'), $Message
+  Write-Host $line
+}
+
+function Get-LauncherOwnershipState {
+  if (Test-Path -LiteralPath $SupervisionOwnerLeasePath) {
+    try {
+      $rawLease = Get-Content -LiteralPath $SupervisionOwnerLeasePath -Raw -ErrorAction Stop
+      $lease = $rawLease | ConvertFrom-Json -ErrorAction Stop
+      $timeoutSec = 20
+      if ($lease.lease_timeout_sec -is [int] -and [int]$lease.lease_timeout_sec -gt 0) {
+        $timeoutSec = [int]$lease.lease_timeout_sec
+      } elseif ($lease.lease_timeout_sec) {
+        try {
+          $n = [int]$lease.lease_timeout_sec
+          if ($n -gt 0) { $timeoutSec = $n }
+        } catch {}
+      }
+      $updatedAt = $null
+      if ($lease.updated_at) {
+        $dt = [DateTime]::MinValue
+        if ([DateTime]::TryParse([string]$lease.updated_at, [ref]$dt)) {
+          $updatedAt = $dt.ToUniversalTime()
+        }
+      }
+      if ($null -eq $updatedAt) {
+        return [pscustomobject]@{
+          Active = $false
+          Reason = 'owner_lease invalid updated_at'
+          AgeSec = $null
+        }
+      }
+      $ageSec = ([DateTime]::UtcNow - $updatedAt).TotalSeconds
+      $leaseFresh = ($ageSec -le $timeoutSec)
+      $pidAlive = $false
+      if ($lease.pid) {
+        try {
+          $pidAlive = $null -ne (Get-Process -Id ([int]$lease.pid) -ErrorAction SilentlyContinue)
+        } catch {
+          $pidAlive = $false
+        }
+      }
+      if ($leaseFresh -and $pidAlive) {
+        return [pscustomobject]@{
+          Active = $true
+          Reason = ("owner lease active owner_id={0} pid={1} age_sec={2:0.0}" -f [string]$lease.owner_id, [string]$lease.pid, $ageSec)
+          AgeSec = [Math]::Round($ageSec, 1)
+        }
+      }
+      $leaseReason = [string]$lease.reason
+      if ($leaseReason -in @('shutdown', 'stopped_by_operator', 'supervision_disabled')) {
+        return [pscustomobject]@{
+          Active = $false
+          Reason = ("inactive (graceful shutdown: {0})" -f $leaseReason)
+          AgeSec = [Math]::Round($ageSec, 1)
+        }
+      }
+      return [pscustomobject]@{
+        Active = $false
+        Reason = ("owner lease stale_or_dead age_sec={0:0.0} timeout_sec={1} pid_alive={2}" -f $ageSec, $timeoutSec, $pidAlive)
+        AgeSec = [Math]::Round($ageSec, 1)
+      }
+    } catch {
+      # fall back to supervision status artifact.
+    }
+  }
+
+  if (-not (Test-Path -LiteralPath $SupervisionStatusPath)) {
+    return [pscustomobject]@{
+      Active = $false
+      Reason = "supervision_status missing"
+      AgeSec = $null
+    }
+  }
+  try {
+    $item = Get-Item -LiteralPath $SupervisionStatusPath -ErrorAction Stop
+    $ageSec = ([DateTime]::UtcNow - $item.LastWriteTimeUtc).TotalSeconds
+    if ($ageSec -gt $SupervisionStatusStaleSec) {
+      return [pscustomobject]@{
+        Active = $false
+        Reason = ("supervision_status stale age_sec={0:0.0}" -f $ageSec)
+        AgeSec = [Math]::Round($ageSec, 1)
+      }
+    }
+    return [pscustomobject]@{
+      Active = $true
+      Reason = ("supervision active (fresh heartbeat age_sec={0:0.0})" -f $ageSec)
+      AgeSec = [Math]::Round($ageSec, 1)
+    }
+  } catch {
+    return [pscustomobject]@{
+      Active = $false
+      Reason = ("supervision_status unreadable: {0}" -f $_.Exception.Message)
+      AgeSec = $null
+    }
+  }
+}
+
+function Get-ManagedTargetName {
+  param([string]$AppName)
+  switch ($AppName) {
+    'Worker' { return 'worker' }
+    'Scoreboard' { return 'scoreboard' }
+    'OBS' { return 'obs' }
+    'Encoder' { return 'encoder_watchdog' }
+    'logs2dropbox' { return 'logs2dropbox' }
+    default { return $null }
+  }
+}
+
+function Submit-LauncherIntent {
+  param(
+    [string]$Action,
+    [string]$Target,
+    [string]$SourceAction
+  )
+  $actionNorm = $Action.Trim().ToLowerInvariant()
+  if ($actionNorm -notin @('start', 'stop', 'restart')) {
+    throw "unsupported intent action: $Action"
+  }
+  if ([string]::IsNullOrWhiteSpace($Target)) {
+    throw "intent target is required"
+  }
+  New-Item -ItemType Directory -Force -Path $LauncherIntentsPendingDir | Out-Null
+  $now = [DateTime]::UtcNow
+  $id = [guid]::NewGuid().ToString('N')
+  $payload = [ordered]@{
+    id = $id
+    action = $actionNorm
+    target = $Target
+    created_at = $now.ToString('o')
+    source = 'launcher_ui.ps1'
+    source_action = $SourceAction
+  }
+  $ts = $now.ToString('yyyyMMddHHmmssfff')
+  $baseName = "{0}_{1}_{2}_{3}" -f $ts, $actionNorm, $Target, $id
+  $tmpPath = Join-Path $LauncherIntentsPendingDir ($baseName + '.tmp')
+  $finalPath = Join-Path $LauncherIntentsPendingDir ($baseName + '.json')
+  $json = $payload | ConvertTo-Json -Depth 6
+  Set-Content -LiteralPath $tmpPath -Encoding UTF8 -Value $json
+  Move-Item -LiteralPath $tmpPath -Destination $finalPath -Force
+  return $finalPath
+}
+
+function Test-UiActionBlockedByOwnership {
+  param(
+    [hashtable]$Row,
+    [string]$Action
+  )
+  $appName = [string]$Row.App.Name
+  if ($LauncherManagedApps -notcontains $appName) {
+    return $false
+  }
+  $owner = Get-LauncherOwnershipState
+  if (-not $owner.Active) {
+    return $false
+  }
+  $target = Get-ManagedTargetName -AppName $appName
+  $intentAction = switch -Wildcard ($Action.ToLowerInvariant()) {
+    'start*' { 'start'; break }
+    'stop*' { 'stop'; break }
+    default { 'restart' }
+  }
+  if ([string]::IsNullOrWhiteSpace($target)) {
+    $msg = "Launcher supervision is active. Direct UI action '$Action' for '$appName' is blocked to avoid dual-owner conflicts."
+    [void][System.Windows.Forms.MessageBox]::Show($msg, 'ReplayTrove Launcher', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+    Write-UiLog "UI action blocked by supervision owner: action=$Action app=$appName reason=$($owner.Reason)"
+    return $true
+  }
+  try {
+    $intentPath = Submit-LauncherIntent -Action $intentAction -Target $target -SourceAction $Action
+    $msg = "Launcher supervision is active. A '$intentAction' request was sent to launcher supervisor for '$appName'.`n`nIntent: $intentPath"
+    [void][System.Windows.Forms.MessageBox]::Show($msg, 'ReplayTrove Launcher', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    Write-UiLog "UI action rerouted to intent bridge: action=$Action intent_action=$intentAction app=$appName target=$target intent=$intentPath reason=$($owner.Reason)"
+  } catch {
+    $msg = "Launcher supervision is active, but request failed for '$appName'.`n`nError: $($_.Exception.Message)"
+    [void][System.Windows.Forms.MessageBox]::Show($msg, 'ReplayTrove Launcher', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    Write-UiLog "UI intent submission failed: action=$Action app=$appName target=$target error=$($_.Exception.Message)"
+  }
+  return $true
+}
 
 function Get-LauncherUiProcesses {
   $procs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
@@ -171,11 +373,18 @@ $apps = @(
     Stop = { Stop-ProcessByNameSafe -Name 'obs64' }
   }
   @{
-    Name = 'StreamDeck'
-    Env = 'REPLAYTROVE_ENABLE_STREAMDECK'
-    IsRunning = { (Get-ProcessByNameSafe -Name 'StreamDeck').Count -gt 0 }
-    Start = { Start-Process -FilePath $StreamDeckExe -WindowStyle Minimized | Out-Null }
-    Stop = { Stop-ProcessByNameSafe -Name 'StreamDeck' }
+    Name = 'Control App'
+    Env = 'REPLAYTROVE_ENABLE_CONTROL_APP'
+    IsRunning = { (Get-ProcessByNameSafe -Name $ControlAppProcessName).Count -gt 0 }
+    Start = {
+      if ([string]::IsNullOrWhiteSpace($ControlAppArgs)) {
+        Start-Process -FilePath $ControlAppExe -WindowStyle Minimized | Out-Null
+      } else {
+        $argList = $ControlAppArgs.Trim() -split '\s+', [System.StringSplitOptions]::RemoveEmptyEntries
+        Start-Process -FilePath $ControlAppExe -ArgumentList $argList -WindowStyle Minimized | Out-Null
+      }
+    }
+    Stop = { Stop-ProcessByNameSafe -Name $ControlAppProcessName }
   }
   @{
     Name = 'Scoreboard'
@@ -195,7 +404,7 @@ $apps = @(
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'ReplayTrove Launcher'
-$form.Size = New-Object System.Drawing.Size(740, 430)
+$form.Size = New-Object System.Drawing.Size(740, 460)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
@@ -206,8 +415,14 @@ $title.Size = New-Object System.Drawing.Size(700, 24)
 $title.Text = 'Use checkboxes for supervisor launch, or control selected apps directly below.'
 $form.Controls.Add($title)
 
+$ownershipLabel = New-Object System.Windows.Forms.Label
+$ownershipLabel.Location = New-Object System.Drawing.Point(15, 34)
+$ownershipLabel.Size = New-Object System.Drawing.Size(700, 24)
+$ownershipLabel.Text = 'Launcher supervision ownership: checking...'
+$form.Controls.Add($ownershipLabel)
+
 $rows = @()
-$y = 45
+$y = 66
 foreach ($app in $apps) {
   $checkbox = New-Object System.Windows.Forms.CheckBox
   $checkbox.Location = New-Object System.Drawing.Point(20, $y)
@@ -256,18 +471,21 @@ foreach ($app in $apps) {
 
   $startBtn.Add_Click({
     $rowRef = $this.Tag
+    if (Test-UiActionBlockedByOwnership -Row $rowRef -Action 'start') { return }
     & $rowRef.App.Start
     Start-Sleep -Milliseconds 500
     Update-Statuses
   })
   $stopBtn.Add_Click({
     $rowRef = $this.Tag
+    if (Test-UiActionBlockedByOwnership -Row $rowRef -Action 'stop') { return }
     & $rowRef.App.Stop
     Start-Sleep -Milliseconds 500
     Update-Statuses
   })
   $restartBtn.Add_Click({
     $rowRef = $this.Tag
+    if (Test-UiActionBlockedByOwnership -Row $rowRef -Action 'restart') { return }
     & $rowRef.App.Stop
     Start-Sleep -Milliseconds 400
     & $rowRef.App.Start
@@ -309,6 +527,14 @@ $refreshButton.Text = 'Refresh Status'
 $form.Controls.Add($refreshButton)
 
 function Update-Statuses {
+  $owner = Get-LauncherOwnershipState
+  if ($owner.Active) {
+    $ownershipLabel.Text = "Launcher supervision ownership: ACTIVE ($($owner.Reason))"
+    $ownershipLabel.ForeColor = [System.Drawing.Color]::DarkGreen
+  } else {
+    $ownershipLabel.Text = "Launcher supervision ownership: INACTIVE ($($owner.Reason))"
+    $ownershipLabel.ForeColor = [System.Drawing.Color]::DarkOrange
+  }
   foreach ($row in $rows) {
     $running = $false
     try {
@@ -338,26 +564,37 @@ function Invoke-ForSelectedRows {
 $refreshButton.Add_Click({ Update-Statuses })
 
 $startSelectedButton.Add_Click({
-  Invoke-ForSelectedRows -Action { param($row) & $row.App.Start }
+  Invoke-ForSelectedRows -Action { param($row) if (-not (Test-UiActionBlockedByOwnership -Row $row -Action 'start_selected')) { & $row.App.Start } }
   Start-Sleep -Milliseconds 700
   Update-Statuses
 })
 
 $stopSelectedButton.Add_Click({
-  Invoke-ForSelectedRows -Action { param($row) & $row.App.Stop }
+  Invoke-ForSelectedRows -Action { param($row) if (-not (Test-UiActionBlockedByOwnership -Row $row -Action 'stop_selected')) { & $row.App.Stop } }
   Start-Sleep -Milliseconds 700
   Update-Statuses
 })
 
 $restartSelectedButton.Add_Click({
-  Invoke-ForSelectedRows -Action { param($row) & $row.App.Stop }
+  Invoke-ForSelectedRows -Action { param($row) if (-not (Test-UiActionBlockedByOwnership -Row $row -Action 'restart_selected_stop')) { & $row.App.Stop } }
   Start-Sleep -Milliseconds 500
-  Invoke-ForSelectedRows -Action { param($row) & $row.App.Start }
+  Invoke-ForSelectedRows -Action { param($row) if (-not (Test-UiActionBlockedByOwnership -Row $row -Action 'restart_selected_start')) { & $row.App.Start } }
   Start-Sleep -Milliseconds 800
   Update-Statuses
 })
 
 $launchButton.Add_Click({
+  $owner = Get-LauncherOwnershipState
+  if ($owner.Active) {
+    [void][System.Windows.Forms.MessageBox]::Show(
+      "Launcher supervision is already active. Launching another supervisor instance is blocked to avoid ownership conflicts.",
+      'ReplayTrove Launcher',
+      [System.Windows.Forms.MessageBoxButtons]::OK,
+      [System.Windows.Forms.MessageBoxIcon]::Warning
+    )
+    Write-UiLog "UI launch blocked: supervision owner already active ($($owner.Reason))"
+    return
+  }
   foreach ($row in $rows) {
     $value = if ($row.Check.Checked) { '1' } else { '0' }
     [Environment]::SetEnvironmentVariable($row.App.Env, $value, 'Process')
@@ -365,6 +602,7 @@ $launchButton.Add_Click({
   $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
   $script = Join-Path $PSScriptRoot 'start_apps.ps1'
   Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script) | Out-Null
+  Write-UiLog 'UI launched start_apps.ps1 as supervisor owner.'
 })
 
 Update-Statuses
