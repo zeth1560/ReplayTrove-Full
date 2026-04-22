@@ -68,9 +68,6 @@ class EncoderSettings:
     encoder_log_file: Path
     long_record_min_bytes: int
     long_record_verify_stable_seconds: float
-    hotkey_start_long: str
-    hotkey_stop_long: str
-    hotkey_restart_app: str
     long_output_width: int
     long_output_height: int
     long_output_fps: int
@@ -121,10 +118,6 @@ def _encoder_ui_mode() -> str:
     raise ValueError("ENCODER_UI_MODE must be 'normal' or 'hidden' (aliases: headless, background)")
 
 
-def _hotkey_combo(name: str, default: str) -> str:
-    return _opt(name, default).strip().lower()
-
-
 def load_encoder_settings() -> EncoderSettings:
     load_dotenv_if_present()
     ff = Path(_opt("FFMPEG_PATH", r"C:\ffmpeg\bin\ffmpeg.exe"))
@@ -166,11 +159,6 @@ def load_encoder_settings() -> EncoderSettings:
         long_record_min_bytes=_opt_int("LONG_RECORD_MIN_BYTES", 256 * 1024, 1024),
         long_record_verify_stable_seconds=_opt_float(
             "LONG_RECORD_VERIFY_STABLE_SECONDS", 3.0, 0.5
-        ),
-        hotkey_start_long=_hotkey_combo("ENCODER_HOTKEY_START_LONG", "ctrl+shift+r"),
-        hotkey_stop_long=_hotkey_combo("ENCODER_HOTKEY_STOP_LONG", "ctrl+shift+s"),
-        hotkey_restart_app=_hotkey_combo(
-            "ENCODER_HOTKEY_RESTART_APP", "q+p+backspace"
         ),
         long_output_width=_opt_int("LONG_OUTPUT_WIDTH", 1920, 16),
         long_output_height=_opt_int("LONG_OUTPUT_HEIGHT", 1080, 16),

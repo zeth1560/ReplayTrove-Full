@@ -6,11 +6,16 @@ from __future__ import annotations
 
 import os
 import re
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import FrozenSet, Tuple
 
 from dotenv import load_dotenv
+from unified_adapter import load_worker_unified_snapshot
+
+
+_LOG = logging.getLogger(__name__)
 
 
 class ConfigError(ValueError):
@@ -29,6 +34,11 @@ def _optional(name: str, default: str) -> str:
     if value is None or not str(value).strip():
         return default
     return str(value).strip()
+
+
+def _env_is_set(name: str) -> bool:
+    value = os.environ.get(name)
+    return value is not None and str(value).strip() != ""
 
 
 def _parse_extensions(raw: str) -> FrozenSet[str]:
@@ -214,6 +224,8 @@ class Settings:
     replay_trigger_http_host: str
     replay_trigger_http_port: int | None
 
+    enable_instant_replay_background_ingest: bool
+    enable_replay_scoreboard_auto_sync: bool
     replay_buffer_filename_prefix: str
     replay_scoreboard_auto_sync_interval_seconds: float
     replay_buffer_stable_check_seconds: float
@@ -237,7 +249,131 @@ def load_settings(env_file: Path | None = None) -> Settings:
     else:
         load_dotenv(override=False)
 
-    incoming = Path(_optional("WATCH_FOLDER", r"C:\ReplayTrove\clips"))
+    unified = load_worker_unified_snapshot()
+    _LOG.info(
+        "worker unified config: found=%s path=%s schema_version=%s migrated=%s worker_section=%s general_section=%s storage_section=%s obsffmpeg_section=%s",
+        unified.found,
+        str(unified.path),
+        unified.schema_version,
+        unified.migrated,
+        unified.worker_section_loaded,
+        unified.general_section_loaded,
+        unified.storage_section_loaded,
+        unified.obsffmpeg_section_loaded,
+    )
+    if unified.error:
+        _LOG.warning("worker unified config parse failed: %s", unified.error)
+
+    source_notes: list[str] = []
+
+    def _pick_string(
+        key: str,
+        *,
+        unified_value: str | None,
+        env_name: str,
+        default: str,
+    ) -> str:
+        if unified_value is not None and str(unified_value).strip():
+            source_notes.append(f"{key}=unified")
+            return str(unified_value).strip()
+        if _env_is_set(env_name):
+            source_notes.append(f"{key}=env")
+            return _optional(env_name, default)
+        source_notes.append(f"{key}=default")
+        return default
+
+    def _pick_bool(
+        key: str,
+        *,
+        unified_value: bool | None,
+        env_name: str,
+        default: bool,
+    ) -> bool:
+        if isinstance(unified_value, bool):
+            source_notes.append(f"{key}=unified")
+            return unified_value
+        if _env_is_set(env_name):
+            source_notes.append(f"{key}=env")
+            return _parse_bool(_optional(env_name, "1" if default else "0"))
+        source_notes.append(f"{key}=default")
+        return default
+
+    def _pick_float(
+        key: str,
+        *,
+        unified_value: float | int | None,
+        env_name: str,
+        default: float,
+        minimum: float | None = None,
+    ) -> float:
+        if isinstance(unified_value, (int, float)) and not isinstance(unified_value, bool):
+            source_notes.append(f"{key}=unified")
+            return _parse_float(key, str(float(unified_value)), minimum=minimum)
+        if _env_is_set(env_name):
+            source_notes.append(f"{key}=env")
+            return _parse_float(key, _optional(env_name, str(default)), minimum=minimum)
+        source_notes.append(f"{key}=default")
+        return default
+
+    def _pick_int(
+        key: str,
+        *,
+        unified_value: int | None,
+        env_name: str,
+        default: int,
+        minimum: int | None = None,
+    ) -> int:
+        if isinstance(unified_value, int) and not isinstance(unified_value, bool):
+            source_notes.append(f"{key}=unified")
+            return _parse_int(key, str(unified_value), minimum=minimum)
+        if _env_is_set(env_name):
+            source_notes.append(f"{key}=env")
+            return _parse_int(key, _optional(env_name, str(default)), minimum=minimum)
+        source_notes.append(f"{key}=default")
+        return default
+
+    def _pick_int_optional(
+        key: str,
+        *,
+        unified_enabled: bool | None,
+        unified_port: int | None,
+        env_name: str,
+    ) -> int | None:
+        if isinstance(unified_enabled, bool):
+            if not unified_enabled:
+                source_notes.append(f"{key}=unified_disabled")
+                return None
+            if isinstance(unified_port, int) and unified_port >= 1:
+                source_notes.append(f"{key}=unified")
+                return unified_port
+            source_notes.append(f"{key}=unified_enabled_missing_port")
+            return None
+        if _env_is_set(env_name):
+            source_notes.append(f"{key}=env")
+            return _parse_int(key, os.environ.get(env_name, "").strip(), minimum=1)
+        source_notes.append(f"{key}=default")
+        return None
+
+    root_default = r"C:\ReplayTrove"
+    root_unified = (
+        str(unified.general.get("replayTroveRoot")).strip()
+        if isinstance(unified.general.get("replayTroveRoot"), str)
+        else ""
+    )
+    replaytrove_root = root_unified or root_default
+
+    incoming = Path(
+        _pick_string(
+            "WATCH_FOLDER",
+            unified_value=(
+                unified.worker.get("watchFolder")
+                if isinstance(unified.worker.get("watchFolder"), str)
+                else None
+            ),
+            env_name="WATCH_FOLDER",
+            default=f"{replaytrove_root}\\clips",
+        )
+    )
     inc_raw = os.environ.get("CLIPS_INCOMING_FOLDER", "").strip()
     if inc_raw:
         incoming = Path(inc_raw)
@@ -252,15 +388,59 @@ def load_settings(env_file: Path | None = None) -> Settings:
     else:
         processing = incoming.parent / "clips_processing"
 
-    preview = Path(_optional("PREVIEW_FOLDER", r"C:\ReplayTrove\previews"))
-    processed = Path(_optional("PROCESSED_FOLDER", r"C:\ReplayTrove\processed"))
-    failed = Path(_optional("FAILED_FOLDER", r"C:\ReplayTrove\failed"))
-    logs = Path(_optional("LOG_FOLDER", r"C:\ReplayTrove\logs"))
+    preview = Path(
+        _pick_string(
+            "PREVIEW_FOLDER",
+            unified_value=(
+                unified.worker.get("previewFolder")
+                if isinstance(unified.worker.get("previewFolder"), str)
+                else None
+            ),
+            env_name="PREVIEW_FOLDER",
+            default=f"{replaytrove_root}\\previews",
+        )
+    )
+    processed = Path(
+        _pick_string(
+            "PROCESSED_FOLDER",
+            unified_value=(
+                unified.worker.get("processedFolder")
+                if isinstance(unified.worker.get("processedFolder"), str)
+                else None
+            ),
+            env_name="PROCESSED_FOLDER",
+            default=f"{replaytrove_root}\\processed",
+        )
+    )
+    failed = Path(
+        _pick_string(
+            "FAILED_FOLDER",
+            unified_value=(
+                unified.worker.get("failedFolder")
+                if isinstance(unified.worker.get("failedFolder"), str)
+                else None
+            ),
+            env_name="FAILED_FOLDER",
+            default=f"{replaytrove_root}\\failed",
+        )
+    )
+    logs = Path(_optional("LOG_FOLDER", f"{replaytrove_root}\\logs"))
     job_db = Path(
         _optional("WORKER_JOB_DB", str(logs / "replaytrove_jobs.sqlite"))
     )
 
-    ffmpeg = Path(_optional("FFMPEG_PATH", r"C:\ffmpeg\bin\ffmpeg.exe"))
+    ffmpeg = Path(
+        _pick_string(
+            "FFMPEG_PATH",
+            unified_value=(
+                unified.obsffmpeg.get("ffmpegPath")
+                if isinstance(unified.obsffmpeg.get("ffmpegPath"), str)
+                else None
+            ),
+            env_name="FFMPEG_PATH",
+            default=r"C:\ffmpeg\bin\ffmpeg.exe",
+        )
+    )
 
     region = _require("AWS_REGION")
     key_id = _require("AWS_ACCESS_KEY_ID")
@@ -282,7 +462,16 @@ def load_settings(env_file: Path | None = None) -> Settings:
     sb_url = _require("SUPABASE_URL")
     sb_key = _require("SUPABASE_KEY")
     clips_table = _optional("SUPABASE_CLIPS_TABLE", "clips")
-    bookings_table = _optional("SUPABASE_BOOKINGS_TABLE", "bookings")
+    bookings_table = _pick_string(
+        "SUPABASE_BOOKINGS_TABLE",
+        unified_value=(
+            unified.storage.get("supabaseBookingsTable")
+            if isinstance(unified.storage.get("supabaseBookingsTable"), str)
+            else None
+        ),
+        env_name="SUPABASE_BOOKINGS_TABLE",
+        default="bookings",
+    )
 
     pp_match_url = _require("PICKLE_PLANNER_MATCH_URL")
     pp_api_key = _require("PICKLE_PLANNER_API_KEY")
@@ -293,7 +482,17 @@ def load_settings(env_file: Path | None = None) -> Settings:
 
     exts = _parse_extensions(_optional("VIDEO_EXTENSIONS", ".mp4,.mov,.mkv"))
 
-    preview_width = _parse_int("PREVIEW_WIDTH", _optional("PREVIEW_WIDTH", "426"), minimum=16)
+    preview_width = _pick_int(
+        "PREVIEW_WIDTH",
+        unified_value=(
+            unified.worker.get("previewWidth")
+            if isinstance(unified.worker.get("previewWidth"), int)
+            else None
+        ),
+        env_name="PREVIEW_WIDTH",
+        default=426,
+        minimum=16,
+    )
     preview_crf = _parse_int("PREVIEW_CRF", _optional("PREVIEW_CRF", "36"), minimum=0)
     preview_preset = _optional("PREVIEW_PRESET", "fast")
 
@@ -313,14 +512,26 @@ def load_settings(env_file: Path | None = None) -> Settings:
         minimum=0,
     )
 
-    up_retries = _parse_int(
+    up_retries = _pick_int(
         "UPLOAD_RETRIES",
-        _optional("UPLOAD_RETRIES", "3"),
+        unified_value=(
+            unified.worker.get("uploadRetries")
+            if isinstance(unified.worker.get("uploadRetries"), int)
+            else None
+        ),
+        env_name="UPLOAD_RETRIES",
+        default=3,
         minimum=1,
     )
-    up_delay = _parse_float(
+    up_delay = _pick_float(
         "UPLOAD_RETRY_DELAY_SECONDS",
-        _optional("UPLOAD_RETRY_DELAY_SECONDS", "3"),
+        unified_value=(
+            unified.worker.get("uploadRetryDelaySeconds")
+            if isinstance(unified.worker.get("uploadRetryDelaySeconds"), (int, float))
+            else None
+        ),
+        env_name="UPLOAD_RETRY_DELAY_SECONDS",
+        default=3,
         minimum=0,
     )
 
@@ -369,17 +580,37 @@ def load_settings(env_file: Path | None = None) -> Settings:
 
     published = _parse_bool(_optional("PUBLISHED", "true"))
 
-    if "INSTANT_REPLAY_SOURCE" in os.environ:
+    unified_ir = (
+        str(unified.worker.get("instantReplaySource")).strip()
+        if isinstance(unified.worker.get("instantReplaySource"), str)
+        else ""
+    )
+    if unified_ir:
+        source_notes.append("INSTANT_REPLAY_SOURCE=unified")
+        instant_replay_source = Path(unified_ir)
+    elif "INSTANT_REPLAY_SOURCE" in os.environ:
+        source_notes.append("INSTANT_REPLAY_SOURCE=env")
         ir = os.environ["INSTANT_REPLAY_SOURCE"].strip()
         instant_replay_source = Path(ir) if ir else None
     else:
-        instant_replay_source = Path(r"C:\ReplayTrove\INSTANTREPLAY.mkv")
+        source_notes.append("INSTANT_REPLAY_SOURCE=default")
+        instant_replay_source = Path(f"{replaytrove_root}\\INSTANTREPLAY.mkv")
 
-    if "LONG_CLIPS_FOLDER" in os.environ:
+    unified_lc = (
+        str(unified.worker.get("longClipsFolder")).strip()
+        if isinstance(unified.worker.get("longClipsFolder"), str)
+        else ""
+    )
+    if unified_lc:
+        source_notes.append("LONG_CLIPS_FOLDER=unified")
+        long_clips_folder = Path(unified_lc)
+    elif "LONG_CLIPS_FOLDER" in os.environ:
+        source_notes.append("LONG_CLIPS_FOLDER=env")
         lc = os.environ["LONG_CLIPS_FOLDER"].strip()
         long_clips_folder = Path(lc) if lc else None
     else:
-        long_clips_folder = Path(r"C:\ReplayTrove\long_clips")
+        source_notes.append("LONG_CLIPS_FOLDER=default")
+        long_clips_folder = Path(f"{replaytrove_root}\\long_clips")
 
     long_clip_stable_seconds = _parse_float(
         "LONG_CLIP_STABLE_SECONDS",
@@ -435,15 +666,31 @@ def load_settings(env_file: Path | None = None) -> Settings:
         minimum=1,
     )
 
-    if "INSTANT_REPLAY_TRIGGER_FILE" in os.environ:
+    unified_trigger = (
+        str(unified.worker.get("instantReplayTriggerFile")).strip()
+        if isinstance(unified.worker.get("instantReplayTriggerFile"), str)
+        else None
+    )
+    if unified_trigger is not None:
+        source_notes.append("INSTANT_REPLAY_TRIGGER_FILE=unified")
+        instant_replay_trigger_file = Path(unified_trigger) if unified_trigger else None
+    elif "INSTANT_REPLAY_TRIGGER_FILE" in os.environ:
+        source_notes.append("INSTANT_REPLAY_TRIGGER_FILE=env")
         irt = os.environ["INSTANT_REPLAY_TRIGGER_FILE"].strip()
         instant_replay_trigger_file = Path(irt) if irt else None
     else:
+        source_notes.append("INSTANT_REPLAY_TRIGGER_FILE=default")
         instant_replay_trigger_file = None
 
-    instant_replay_trigger_settle = _parse_float(
+    instant_replay_trigger_settle = _pick_float(
         "INSTANT_REPLAY_TRIGGER_SETTLE_SECONDS",
-        _optional("INSTANT_REPLAY_TRIGGER_SETTLE_SECONDS", "1.0"),
+        unified_value=(
+            unified.worker.get("instantReplayTriggerSettleSeconds")
+            if isinstance(unified.worker.get("instantReplayTriggerSettleSeconds"), (int, float))
+            else None
+        ),
+        env_name="INSTANT_REPLAY_TRIGGER_SETTLE_SECONDS",
+        default=1.0,
         minimum=0,
     )
 
@@ -453,9 +700,15 @@ def load_settings(env_file: Path | None = None) -> Settings:
     else:
         long_clips_trigger_file = None
 
-    long_clips_scan_interval = _parse_float(
+    long_clips_scan_interval = _pick_float(
         "LONG_CLIPS_SCAN_INTERVAL_SECONDS",
-        _optional("LONG_CLIPS_SCAN_INTERVAL_SECONDS", "10"),
+        unified_value=(
+            unified.worker.get("longClipsScanIntervalSeconds")
+            if isinstance(unified.worker.get("longClipsScanIntervalSeconds"), (int, float))
+            else None
+        ),
+        env_name="LONG_CLIPS_SCAN_INTERVAL_SECONDS",
+        default=10,
         minimum=0,
     )
 
@@ -471,9 +724,15 @@ def load_settings(env_file: Path | None = None) -> Settings:
         minimum=0,
     )
 
-    worker_concurrency = _parse_int(
+    worker_concurrency = _pick_int(
         "WORKER_CONCURRENCY",
-        _optional("WORKER_CONCURRENCY", "1"),
+        unified_value=(
+            unified.worker.get("workerConcurrency")
+            if isinstance(unified.worker.get("workerConcurrency"), int)
+            else None
+        ),
+        env_name="WORKER_CONCURRENCY",
+        default=1,
         minimum=1,
     )
     long_clip_threshold = _parse_int(
@@ -597,64 +856,195 @@ def load_settings(env_file: Path | None = None) -> Settings:
         minimum=0.0,
     )
     status_json = Path(
-        _optional("WORKER_STATUS_JSON_PATH", r"C:\ReplayTrove\status.json")
-    )
-    status_write_iv = _parse_float(
-        "WORKER_STATUS_WRITE_INTERVAL_SECONDS",
-        _optional("WORKER_STATUS_WRITE_INTERVAL_SECONDS", "5"),
-        minimum=0.0,
-    )
-
-    replay_trigger_host = _optional("REPLAY_TRIGGER_HTTP_HOST", "127.0.0.1")
-    replay_trigger_port_raw = os.environ.get("REPLAY_TRIGGER_HTTP_PORT", "").strip()
-    if not replay_trigger_port_raw:
-        replay_trigger_http_port: int | None = None
-    else:
-        replay_trigger_http_port = _parse_int(
-            "REPLAY_TRIGGER_HTTP_PORT",
-            replay_trigger_port_raw,
-            minimum=1,
+        _pick_string(
+            "WORKER_STATUS_JSON_PATH",
+            unified_value=(
+                unified.worker.get("workerStatusJsonPath")
+                if isinstance(unified.worker.get("workerStatusJsonPath"), str)
+                else None
+            ),
+            env_name="WORKER_STATUS_JSON_PATH",
+            default=f"{replaytrove_root}\\status.json",
         )
-
-    replay_buffer_filename_prefix = _optional("REPLAY_BUFFER_FILENAME_PREFIX", "replay_")
-    replay_scoreboard_auto_sync_iv = _parse_float(
-        "REPLAY_SCOREBOARD_AUTO_SYNC_INTERVAL_SECONDS",
-        _optional("REPLAY_SCOREBOARD_AUTO_SYNC_INTERVAL_SECONDS", "0.05"),
+    )
+    status_write_iv = _pick_float(
+        "WORKER_STATUS_WRITE_INTERVAL_SECONDS",
+        unified_value=(
+            unified.worker.get("workerStatusWriteIntervalSeconds")
+            if isinstance(unified.worker.get("workerStatusWriteIntervalSeconds"), (int, float))
+            else None
+        ),
+        env_name="WORKER_STATUS_WRITE_INTERVAL_SECONDS",
+        default=5,
         minimum=0.0,
     )
-    replay_buf_stable_chk = _parse_float(
+
+    replay_trigger_host = _pick_string(
+        "REPLAY_TRIGGER_HTTP_HOST",
+        unified_value=(
+            unified.worker.get("httpReplayTriggerHost")
+            if isinstance(unified.worker.get("httpReplayTriggerHost"), str)
+            else None
+        ),
+        env_name="REPLAY_TRIGGER_HTTP_HOST",
+        default="127.0.0.1",
+    )
+    replay_trigger_http_port = _pick_int_optional(
+        "REPLAY_TRIGGER_HTTP_PORT",
+        unified_enabled=(
+            unified.worker.get("httpReplayTriggerEnabled")
+            if isinstance(unified.worker.get("httpReplayTriggerEnabled"), bool)
+            else None
+        ),
+        unified_port=(
+            unified.worker.get("httpReplayTriggerPort")
+            if isinstance(unified.worker.get("httpReplayTriggerPort"), int)
+            else None
+        ),
+        env_name="REPLAY_TRIGGER_HTTP_PORT",
+    )
+
+    enable_ir_background = _pick_bool(
+        "ENABLE_INSTANT_REPLAY_BACKGROUND_INGEST",
+        unified_value=(
+            unified.worker.get("enableInstantReplayBackgroundIngest")
+            if isinstance(unified.worker.get("enableInstantReplayBackgroundIngest"), bool)
+            else None
+        ),
+        env_name="ENABLE_INSTANT_REPLAY_BACKGROUND_INGEST",
+        default=False,
+    )
+    enable_replay_auto_sync = _pick_bool(
+        "ENABLE_REPLAY_SCOREBOARD_AUTO_SYNC",
+        unified_value=(
+            unified.worker.get("enableReplayScoreboardAutoSync")
+            if isinstance(unified.worker.get("enableReplayScoreboardAutoSync"), bool)
+            else None
+        ),
+        env_name="ENABLE_REPLAY_SCOREBOARD_AUTO_SYNC",
+        default=False,
+    )
+
+    replay_buffer_filename_prefix = _pick_string(
+        "REPLAY_BUFFER_FILENAME_PREFIX",
+        unified_value=(
+            unified.worker.get("replayBufferFilenamePrefix")
+            if isinstance(unified.worker.get("replayBufferFilenamePrefix"), str)
+            else None
+        ),
+        env_name="REPLAY_BUFFER_FILENAME_PREFIX",
+        default="replay_",
+    )
+    replay_scoreboard_auto_sync_iv = _pick_float(
+        "REPLAY_SCOREBOARD_AUTO_SYNC_INTERVAL_SECONDS",
+        unified_value=(
+            unified.worker.get("replayScoreboardAutoSyncIntervalSeconds")
+            if isinstance(
+                unified.worker.get("replayScoreboardAutoSyncIntervalSeconds"),
+                (int, float),
+            )
+            else None
+        ),
+        env_name="REPLAY_SCOREBOARD_AUTO_SYNC_INTERVAL_SECONDS",
+        default=0.0,
+        minimum=0.0,
+    )
+
+    replay_buf_stable_chk = _pick_float(
         "REPLAY_BUFFER_STABLE_CHECK_SECONDS",
-        _optional("REPLAY_BUFFER_STABLE_CHECK_SECONDS", "0.08"),
+        unified_value=(
+            unified.worker.get("replayBufferStableCheckSeconds")
+            if isinstance(unified.worker.get("replayBufferStableCheckSeconds"), (int, float))
+            else None
+        ),
+        env_name="REPLAY_BUFFER_STABLE_CHECK_SECONDS",
+        default=0.08,
         minimum=0.05,
     )
-    replay_buf_stable_min_age = _parse_float(
+    replay_buf_stable_min_age = _pick_float(
         "REPLAY_BUFFER_STABLE_MIN_AGE_SECONDS",
-        _optional("REPLAY_BUFFER_STABLE_MIN_AGE_SECONDS", "0.1"),
+        unified_value=(
+            unified.worker.get("replayBufferStableMinAgeSeconds")
+            if isinstance(unified.worker.get("replayBufferStableMinAgeSeconds"), (int, float))
+            else None
+        ),
+        env_name="REPLAY_BUFFER_STABLE_MIN_AGE_SECONDS",
+        default=0.1,
         minimum=0.0,
     )
-    replay_buf_stable_rounds = _parse_int(
+    replay_buf_stable_rounds = _pick_int(
         "REPLAY_BUFFER_STABLE_ROUNDS",
-        _optional("REPLAY_BUFFER_STABLE_ROUNDS", "2"),
+        unified_value=(
+            unified.worker.get("replayBufferStableRoundsRequired")
+            if isinstance(unified.worker.get("replayBufferStableRoundsRequired"), int)
+            else None
+        ),
+        env_name="REPLAY_BUFFER_STABLE_ROUNDS",
+        default=2,
         minimum=1,
     )
-    replay_buf_stable_max_ret = _parse_int(
+    replay_buf_stable_max_ret = _pick_int(
         "REPLAY_BUFFER_STABLE_MAX_RETRIES",
-        _optional("REPLAY_BUFFER_STABLE_MAX_RETRIES", "80"),
+        unified_value=(
+            unified.worker.get("replayBufferStableMaxRetries")
+            if isinstance(unified.worker.get("replayBufferStableMaxRetries"), int)
+            else None
+        ),
+        env_name="REPLAY_BUFFER_STABLE_MAX_RETRIES",
+        default=80,
         minimum=5,
     )
-    replay_buf_delete_src = _parse_bool(
-        _optional("REPLAY_BUFFER_DELETE_SOURCE_AFTER_SUCCESS", "true")
+    replay_buf_delete_src = _pick_bool(
+        "REPLAY_BUFFER_DELETE_SOURCE_AFTER_SUCCESS",
+        unified_value=(
+            unified.worker.get("replayBufferDeleteSourceAfterSuccess")
+            if isinstance(unified.worker.get("replayBufferDeleteSourceAfterSuccess"), bool)
+            else None
+        ),
+        env_name="REPLAY_BUFFER_DELETE_SOURCE_AFTER_SUCCESS",
+        default=True,
     )
-    replay_buf_remux_attempts = _parse_int(
+    replay_buf_remux_attempts = _pick_int(
         "REPLAY_BUFFER_REMUX_MAX_ATTEMPTS",
-        _optional("REPLAY_BUFFER_REMUX_MAX_ATTEMPTS", "10"),
+        unified_value=(
+            unified.worker.get("replayBufferRemuxMaxAttempts")
+            if isinstance(unified.worker.get("replayBufferRemuxMaxAttempts"), int)
+            else None
+        ),
+        env_name="REPLAY_BUFFER_REMUX_MAX_ATTEMPTS",
+        default=10,
         minimum=1,
     )
-    replay_buf_remux_delay = _parse_float(
+    replay_buf_remux_delay = _pick_float(
         "REPLAY_BUFFER_REMUX_RETRY_DELAY_SECONDS",
-        _optional("REPLAY_BUFFER_REMUX_RETRY_DELAY_SECONDS", "4"),
+        unified_value=(
+            unified.worker.get("replayBufferRemuxRetryDelaySeconds")
+            if isinstance(unified.worker.get("replayBufferRemuxRetryDelaySeconds"), (int, float))
+            else None
+        ),
+        env_name="REPLAY_BUFFER_REMUX_RETRY_DELAY_SECONDS",
+        default=4,
         minimum=0,
     )
+    _LOG.info("worker config source resolution: %s", ", ".join(source_notes))
+    fallback_notes = [n for n in source_notes if not n.endswith("=unified")]
+    if fallback_notes:
+        _LOG.warning("worker config fallback in use: %s", ", ".join(fallback_notes))
+    legacy_replay_env_notes = [
+        n
+        for n in source_notes
+        if n
+        in (
+            "REPLAY_TRIGGER_HTTP_HOST=env",
+            "REPLAY_TRIGGER_HTTP_PORT=env",
+            "INSTANT_REPLAY_TRIGGER_FILE=env",
+        )
+    ]
+    if legacy_replay_env_notes:
+        _LOG.warning(
+            "worker replay config using env fallback: %s (prefer unified config/settings.json worker.* values)",
+            ", ".join(legacy_replay_env_notes),
+        )
 
     return Settings(
         clips_incoming_folder=incoming,
@@ -754,6 +1144,8 @@ def load_settings(env_file: Path | None = None) -> Settings:
         worker_status_write_interval_seconds=status_write_iv,
         replay_trigger_http_host=replay_trigger_host,
         replay_trigger_http_port=replay_trigger_http_port,
+        enable_instant_replay_background_ingest=enable_ir_background,
+        enable_replay_scoreboard_auto_sync=enable_replay_auto_sync,
         replay_buffer_filename_prefix=replay_buffer_filename_prefix,
         replay_scoreboard_auto_sync_interval_seconds=replay_scoreboard_auto_sync_iv,
         replay_buffer_stable_check_seconds=replay_buf_stable_chk,

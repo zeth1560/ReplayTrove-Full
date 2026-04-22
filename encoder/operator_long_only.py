@@ -170,10 +170,6 @@ STATE_TO_APP: dict[str, str] = {
 }
 
 
-def _pretty_hotkey_combo(combo: str) -> str:
-    return "+".join(p.strip().capitalize() for p in combo.split("+"))
-
-
 def _format_hms(total_sec: float) -> str:
     """Format seconds as H:MM:SS or M:SS for status/timer display."""
     s = max(0, int(round(total_sec)))
@@ -747,7 +743,6 @@ class LongOnlyApp:
         self._poll_log()
         self._tick()
         self.root.after(100, self.command_poll_loop)
-        self._register_global_hotkeys()
         self.events.emit("APP_READY", message="Long-only operator app ready.")
 
     def check_for_commands(self) -> None:
@@ -879,6 +874,8 @@ class LongOnlyApp:
                 )
                 return
             self.stop_long("command_stop_recording")
+        elif action == "restart_app":
+            self._restart_app(stop_trigger_source="command_restart_app")
         else:
             raise ValueError(f"unknown action: {action!r}")
 
@@ -939,15 +936,11 @@ class LongOnlyApp:
         self.log_widget.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
         self.log_widget.bind("<Key>", lambda _e: "break")
 
-        hk_line = (
-            f"{_pretty_hotkey_combo(settings.hotkey_start_long)} -> Start long recording | "
-            f"{_pretty_hotkey_combo(settings.hotkey_stop_long)} -> Stop long recording | "
-            f"{_pretty_hotkey_combo(settings.hotkey_restart_app)} -> Restart app"
+        footer_txt = (
+            "Long record: command JSON in "
+            f"{COMMANDS_PENDING_DIR} "
+            "(actions: start_recording, stop_recording, restart_app), or use the buttons above."
         )
-        if sys.platform == "win32":
-            footer_txt = "Global hotkeys (Windows): " + hk_line
-        else:
-            footer_txt = "Global hotkeys: Windows only - " + hk_line
         tk.Label(
             root,
             text=footer_txt,
@@ -1130,116 +1123,18 @@ class LongOnlyApp:
                 },
             )
 
-    def _register_global_hotkeys(self) -> None:
-        if sys.platform != "win32":
-            logger.info("Global hotkeys skipped (not Windows)")
-            return
-
-        try:
-            import keyboard  # noqa: F401
-        except ImportError:
-            msg = (
-                "Global hotkeys unavailable: Python package 'keyboard' is not installed.\n"
-                "Install it in this interpreter with:\n"
-                "  python -m pip install keyboard"
-            )
-            logger.error(msg)
-            self._emit_ui(msg)
-            self.events.emit(
-                "HOTKEY_REGISTRATION_FAILED",
-                level="ERROR",
-                message="Keyboard package missing; hotkeys unavailable.",
-                data={"error": msg},
-            )
-            if self._ui_hidden:
-                logger.error(msg)
-            else:
-                messagebox.showerror("Global hotkeys unavailable", msg)
-            return
-
-        from global_hotkeys import register_global_hotkeys_win
-
-        def on_done() -> None:
-            self._emit_ui(
-                "Global hotkey registration finished (if hooks failed, install: pip install keyboard)."
-            )
-            self.events.emit("HOTKEYS_ARMED", message="Global hotkeys armed.")
-
-        def on_registered(combo: str) -> None:
-            self.events.emit(
-                "HOTKEY_REGISTERED",
-                message="Global hotkey registered.",
-                data={"hotkey": combo},
-            )
-
-        def on_registration_failed(combo: str, err: str) -> None:
-            self.events.emit(
-                "HOTKEY_REGISTRATION_FAILED",
-                level="ERROR",
-                message="Global hotkey registration failed.",
-                data={"hotkey": combo, "error": err},
-            )
-
-        register_global_hotkeys_win(
-            self.root,
-            [
-                (self.settings.hotkey_start_long, self._hotkey_start_long),
-                (self.settings.hotkey_stop_long, self._hotkey_stop_long),
-                (self.settings.hotkey_restart_app, self._hotkey_restart_app),
-            ],
-            on_done=on_done,
-            on_registered=on_registered,
-            on_registration_failed=on_registration_failed,
-        )
-        self._emit_ui(
-            "Hotkeys armed: "
-            f"{self.settings.hotkey_start_long} (start), "
-            f"{self.settings.hotkey_stop_long} (stop), "
-            f"{self.settings.hotkey_restart_app} (restart app)."
-        )
-
-    def _hotkey_start_long(self) -> None:
+    def _restart_app(self, *, stop_trigger_source: str) -> None:
         if self._shutting_down:
             return
-        self.events.emit(
-            "HOTKEY_TRIGGERED",
-            message="Start long hotkey triggered.",
-            data={"hotkey": self.settings.hotkey_start_long, "action": "start_long"},
-        )
-        self.start_long("hotkey_start_long")
-
-    def _hotkey_stop_long(self) -> None:
-        if self._shutting_down:
-            return
-        self.events.emit(
-            "HOTKEY_TRIGGERED",
-            message="Stop long hotkey triggered.",
-            data={"hotkey": self.settings.hotkey_stop_long, "action": "stop_long"},
-        )
-        self.stop_long("hotkey_stop_long")
-
-    def _hotkey_restart_app(self) -> None:
-        if self._shutting_down:
-            return
-        self._emit_ui("Manual restart requested via global hotkey.")
-        self.events.emit(
-            "HOTKEY_TRIGGERED",
-            message="Restart app hotkey triggered.",
-            data={"hotkey": self.settings.hotkey_restart_app, "action": "restart_app"},
-        )
+        self._emit_ui("Manual restart requested.")
         self.events.emit(
             "APP_RESTART_REQUESTED",
-            message="App restart requested via hotkey.",
-            data={"reason": "operator_hotkey"},
+            message="App restart requested.",
+            data={"reason": stop_trigger_source},
         )
         self._shutting_down = True
         self._restart_pending = True
-        if sys.platform == "win32":
-            from global_hotkeys import unregister_all_global_hotkeys_win
-
-            unregister_all_global_hotkeys_win()
-        self.events.emit("HOTKEYS_UNREGISTERED", message="Global hotkeys unregistered.")
-        self.rec.stop(reason="restart", stop_trigger_source="hotkey_restart_app")
+        self.rec.stop(reason="restart", stop_trigger_source=stop_trigger_source)
         self._publish_state()
         self.events.emit(
             "APP_RESTART_EXITING",
@@ -1795,11 +1690,6 @@ class LongOnlyApp:
             data={"reason": "operator_request"},
         )
         self._shutting_down = True
-        if sys.platform == "win32":
-            from global_hotkeys import unregister_all_global_hotkeys_win
-
-            unregister_all_global_hotkeys_win()
-        self.events.emit("HOTKEYS_UNREGISTERED", message="Global hotkeys unregistered.")
         running = False
         with self._stop_sequence_lock:
             if self._stop_sequence_in_progress:

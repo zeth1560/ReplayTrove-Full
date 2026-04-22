@@ -67,7 +67,7 @@ class ReplayBufferLoadingOverlay:
         self._photos.clear()
 
     def start_sequence(self) -> None:
-        _LOG.info("Replay buffer loading: hotkey received")
+        _LOG.info("Replay buffer loading: sequence start")
         paths = self._resolve_frame_paths()
         if paths is None:
             self._flash_missing_assets_message()

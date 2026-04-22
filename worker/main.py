@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import random
 import signal
 import sys
@@ -50,6 +51,19 @@ from watcher import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _log_replay_trigger_env_fallbacks() -> None:
+    legacy_env = []
+    for name in ("REPLAY_TRIGGER_HTTP_HOST", "REPLAY_TRIGGER_HTTP_PORT"):
+        value = os.environ.get(name)
+        if value is not None and str(value).strip():
+            legacy_env.append(name)
+    if legacy_env:
+        logger.warning(
+            "replay-trigger-http: env fallback in use for %s (prefer unified worker.httpReplayTriggerHost/httpReplayTriggerPort via config/settings.json)",
+            ",".join(legacy_env),
+        )
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -287,6 +301,9 @@ def _run_process_latest_replay_command(settings: Settings, args: argparse.Namesp
             }
         },
     )
+    logger.warning(
+        "process-latest-replay: non-canonical direct worker path invoked (canonical entrypoint is scripts/save_replay_and_trigger.ps1)",
+    )
 
     result, exit_code = run_process_latest_replay_pipeline(
         settings,
@@ -307,6 +324,7 @@ def _run_replay_trigger_http_command(settings: Settings, args: argparse.Namespac
 
     host = args.host or settings.replay_trigger_http_host
     port = args.port if args.port is not None else settings.replay_trigger_http_port
+    _log_replay_trigger_env_fallbacks()
     if port is None:
         print(
             "replay-trigger-http: set REPLAY_TRIGGER_HTTP_PORT or pass --port",
@@ -335,6 +353,15 @@ def _run_replay_trigger_http_command(settings: Settings, args: argparse.Namespac
         "replay-trigger-http: starting standalone server",
         extra={"structured": {"host": host, "port": port}},
     )
+    logger.warning(
+        "replay-trigger-http: standalone server path active (canonical entrypoint is scripts/save_replay_and_trigger.ps1)",
+        extra={"structured": {"host": host, "port": port}},
+    )
+    expected_canonical_token = os.environ.get("REPLAY_CANONICAL_TOKEN", "").strip() or None
+    if expected_canonical_token is None:
+        logger.warning(
+            "replay-trigger-http: REPLAY_CANONICAL_TOKEN not set; canonical claims will be logged as untrusted",
+        )
     try:
         serve_replay_trigger_http_blocking(
             host,
@@ -343,6 +370,7 @@ def _run_replay_trigger_http_command(settings: Settings, args: argparse.Namespac
             default_timeout=120.0,
             default_prefix=settings.replay_buffer_filename_prefix,
             default_tolerance=10.0,
+            expected_canonical_token=expected_canonical_token,
         )
     except KeyboardInterrupt:
         logger.info("replay-trigger-http: interrupted")
@@ -427,6 +455,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _ensure_directories(settings)
     setup_logging(settings.log_folder)
+    _log_replay_trigger_env_fallbacks()
 
     logger.info(
         "Worker initialized",
@@ -589,6 +618,11 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         def _replay_trigger_http_main() -> None:
+            expected_canonical_token = os.environ.get("REPLAY_CANONICAL_TOKEN", "").strip() or None
+            if expected_canonical_token is None:
+                logger.warning(
+                    "replay-trigger-http: REPLAY_CANONICAL_TOKEN not set; canonical claims will be logged as untrusted",
+                )
             try:
                 run_replay_trigger_http_loop(
                     bind_host,
@@ -596,6 +630,7 @@ def main(argv: list[str] | None = None) -> int:
                     _replay_http_pipeline,
                     stop,
                     default_prefix=settings.replay_buffer_filename_prefix,
+                    expected_canonical_token=expected_canonical_token,
                 )
             except Exception:
                 logger.exception("replay-trigger-http: embedded server thread exited")
@@ -658,8 +693,19 @@ def main(argv: list[str] | None = None) -> int:
         t.start()
         workers.append(t)
 
+    if settings.enable_replay_scoreboard_auto_sync:
+        logger.warning(
+            "replay-buffer: non-canonical auto-sync path enabled (prefer HTTP /replay trigger)",
+            extra={
+                "structured": {
+                    "enable_replay_scoreboard_auto_sync": True,
+                    "interval_seconds": settings.replay_scoreboard_auto_sync_interval_seconds,
+                }
+            },
+        )
     if (
-        settings.replay_scoreboard_auto_sync_interval_seconds > 0
+        settings.enable_replay_scoreboard_auto_sync
+        and settings.replay_scoreboard_auto_sync_interval_seconds > 0
         and settings.long_clips_folder is not None
     ):
 
@@ -858,7 +904,19 @@ def main(argv: list[str] | None = None) -> int:
 
     ingest_threads: list[threading.Thread] = []
 
-    if settings.instant_replay_source is not None:
+    if settings.enable_instant_replay_background_ingest:
+        logger.warning(
+            "instant replay: non-canonical background ingest enabled (prefer HTTP /replay trigger)",
+            extra={
+                "structured": {
+                    "enable_instant_replay_background_ingest": True,
+                    "trigger_file": str(settings.instant_replay_trigger_file)
+                    if settings.instant_replay_trigger_file
+                    else None,
+                }
+            },
+        )
+    if settings.instant_replay_source is not None and settings.enable_instant_replay_background_ingest:
 
         def _instant_poll() -> None:
             try:
@@ -873,12 +931,29 @@ def main(argv: list[str] | None = None) -> int:
                 logger.exception("Instant replay trigger ingest thread exited with error")
 
         if settings.instant_replay_trigger_file is not None:
+            logger.warning(
+                "instant replay: trigger-file mode enabled (non-canonical path)",
+                extra={
+                    "structured": {
+                        "trigger_file": str(settings.instant_replay_trigger_file),
+                        "settle_seconds": settings.instant_replay_trigger_settle_seconds,
+                    }
+                },
+            )
             ir_thread = threading.Thread(
                 target=_instant_trigger,
                 name="instant-replay-trigger",
                 daemon=True,
             )
         else:
+            logger.warning(
+                "instant replay: poll mode enabled (non-canonical path)",
+                extra={
+                    "structured": {
+                        "source": str(settings.instant_replay_source),
+                    }
+                },
+            )
             ir_thread = threading.Thread(
                 target=_instant_poll,
                 name="instant-replay-poll",

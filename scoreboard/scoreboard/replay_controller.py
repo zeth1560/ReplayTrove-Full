@@ -453,12 +453,12 @@ class ReplayController:
 
     def _renew_replay_unavailable_toast_timeout(self) -> None:
         self._scheduler.cancel(self._replay_toast_dismiss_job)
-        # Keep the unavailable graphic solidly visible until operator dismisses (hotkey "i").
+        # Keep the unavailable graphic solidly visible until operator dismisses (command/script).
         # This avoids periodic hide/show blinking under repeated failure conditions.
         self._replay_toast_dismiss_job = None
 
     def dismiss_replay_unavailable_overlay(self) -> bool:
-        """If the fullscreen unavailable graphic is up, dismiss it (replay hotkey ``i``)."""
+        """If the fullscreen unavailable graphic is up, dismiss it (e.g. ``dismiss_replay_unavailable`` command)."""
         if self._replay_toast_win is None:
             return False
         try:
@@ -496,7 +496,7 @@ class ReplayController:
             return None
 
     def _show_replay_unavailable_toast(self) -> None:
-        """Fullscreen graphic (replay failure, OBS gate failure, etc.); 15s or hotkey ``i``."""
+        """Fullscreen graphic (replay failure, OBS gate failure, etc.); stays until dismissed."""
         if self._replay_toast_win is not None:
             try:
                 self._replay_toast_win.deiconify()
@@ -516,13 +516,6 @@ class ReplayController:
                 _LOG.debug("replay unavailable topmost failed", exc_info=True)
             win.configure(bg="black", cursor="none")
 
-            def _dismiss_ev(_e: tk.Event | None = None) -> str:
-                self._dismiss_replay_unavailable_toast()
-                return "break"
-
-            win.bind("<KeyPress-i>", _dismiss_ev)
-            win.bind("<KeyPress-I>", _dismiss_ev)
-
             built = self._try_build_replay_unavailable_photo()
             if built is not None:
                 photo, nw, nh = built
@@ -536,8 +529,6 @@ class ReplayController:
                     cursor="none",
                 )
                 canvas.pack(fill="both", expand=True)
-                canvas.bind("<KeyPress-i>", _dismiss_ev)
-                canvas.bind("<KeyPress-I>", _dismiss_ev)
                 canvas.create_image(0, 0, anchor="nw", image=photo)
                 x = (sw - nw) // 2
                 y = (sh - nh) // 2
@@ -557,8 +548,6 @@ class ReplayController:
                     padx=26,
                     pady=20,
                 ).pack(expand=True)
-                frame.bind("<KeyPress-i>", _dismiss_ev)
-                frame.bind("<KeyPress-I>", _dismiss_ev)
                 win.update_idletasks()
                 fw = max(1, win.winfo_reqwidth())
                 fh = max(1, win.winfo_reqheight())
@@ -805,7 +794,12 @@ class ReplayController:
         ).start()
 
     def _request_launcher_obs_restart_async(self, reason: str) -> None:
-        """Run ``C:\\ReplayTrove\\launcher\\restart_obs.ps1`` (or configured path) in a worker thread."""
+        """Request launcher OBS restart in a worker thread.
+
+        When launcher supervision owner lease is active, direct script spawn is intentionally
+        suppressed and this path becomes a logged no-op; launcher status JSON signal remains
+        the canonical handoff.
+        """
         if not self._settings.replay_launcher_restart_obs_on_unavailable:
             return
         settings = self._settings
@@ -924,6 +918,9 @@ class ReplayController:
         """Assemble mpv CLI from Settings (fullscreen and embedded share the same profile)."""
         s = self._settings
         parts: list[str] = [mpv_executable]
+        # JSON IPC (Windows named pipe) for replay control. Single named pipe is OK: only one
+        # replay mpv runs at a time in this app.
+        parts.append(r"--input-ipc-server=\\.\pipe\mpv")
         if embedded_wid is not None:
             parts.extend([f"--wid={embedded_wid}", "--no-border"])
         elif s.mpv_fullscreen_enabled:

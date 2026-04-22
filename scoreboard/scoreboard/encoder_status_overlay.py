@@ -65,6 +65,7 @@ class EncoderStatusOverlay:
         self._front_is_a = True
         self._last_shown_ready: bool | None = None
         self._hidden_for_recording = False
+        self._poll_interval_ms = int(settings.encoder_status_poll_ms)
 
     @property
     def _margin(self) -> int:
@@ -125,10 +126,15 @@ class EncoderStatusOverlay:
             return
         self._scheduler.cancel(self._poll_job)
         self._poll_job = self._scheduler.schedule(
-            self._settings.encoder_status_poll_ms,
+            self._poll_interval_ms,
             self._poll_tick,
             name=_POLL_JOB,
         )
+
+    def set_poll_interval_ms(self, value: int) -> None:
+        self._poll_interval_ms = max(100, int(value))
+        if self._active:
+            self._schedule_poll()
 
     def _poll_tick(self) -> None:
         self._poll_job = None

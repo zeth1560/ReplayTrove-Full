@@ -1,0 +1,77 @@
+2026-04-22 01:33:51.367 cid=db31c8f5e52b4673a65fd3cb40b5a6c5  pipeline=start obs_host=127.0.0.1 obs_port=1 worker_host=127.0.0.1 worker_port=1
+2026-04-22 01:33:51.379 cid=db31c8f5e52b4673a65fd3cb40b5a6c5  stage=obs_save start script=C:\ReplayTrove\scripts\obs_save_replay.ps1 host=127.0.0.1 port=1
+2026-04-22 01:33:55.474 cid=db31c8f5e52b4673a65fd3cb40b5a6c5  stage=obs_save exit_code=1
+2026-04-22 01:33:55.486 cid=db31c8f5e52b4673a65fd3cb40b5a6c5  pipeline=fail reason=obs_save_replay failed (exit_code=1)
+2026-04-22 01:36:54.270 cid=d65081c44b1d4f69823741b5954e5491  pipeline=start obs_host=127.0.0.1 obs_port=1 worker_host=127.0.0.1 worker_port=1
+2026-04-22 01:36:54.290 cid=d65081c44b1d4f69823741b5954e5491  stage=obs_save start script=C:\ReplayTrove\scripts\obs_save_replay.ps1 host=127.0.0.1 port=1
+2026-04-22 01:36:57.370 cid=d65081c44b1d4f69823741b5954e5491  stage=obs_save exit_code=1
+2026-04-22 01:36:57.379 cid=d65081c44b1d4f69823741b5954e5491  pipeline=fail reason=obs_save_replay failed (exit_code=1)
+2026-04-22 01:37:04.324 cid=08379922867b460cb28e627c807c4dcc  pipeline=start obs_host=127.0.0.1 obs_port=4455 worker_host=127.0.0.1 worker_port=1
+2026-04-22 01:37:04.342 cid=08379922867b460cb28e627c807c4dcc  stage=obs_save skipped=true
+2026-04-22 01:37:04.349 cid=08379922867b460cb28e627c807c4dcc  stage=worker_trigger start uri=http://127.0.0.1:1/replay?trigger=1776839824&request_id=08379922867b460cb28e627c807c4dcc timeout_sec=45
+2026-04-22 01:37:06.407 cid=08379922867b460cb28e627c807c4dcc  stage=worker_trigger transport_error=Unable to connect to the remote server
+2026-04-22 01:37:06.428 cid=08379922867b460cb28e627c807c4dcc  pipeline=fail reason=worker replay HTTP request failed: Unable to connect to the remote server
+2026-04-22 01:42:09.285 cid=2e93bcb7e54e4ec6847480d4078a0e90  pipeline=start obs_host=127.0.0.1 obs_port=1 worker_host=127.0.0.1 worker_port=1
+2026-04-22 01:42:09.308 cid=2e93bcb7e54e4ec6847480d4078a0e90  stage=obs_save start script=C:\ReplayTrove\scripts\obs_save_replay.ps1 host=127.0.0.1 port=1
+2026-04-22 01:42:13.411 cid=2e93bcb7e54e4ec6847480d4078a0e90  stage=obs_save exit_code=1
+2026-04-22 01:42:13.428 cid=2e93bcb7e54e4ec6847480d4078a0e90  pipeline=fail reason=obs_save_replay failed (exit_code=1)
+2026-04-22 01:46:37.986 cid=2ede6bd384574d3eb3cec5be79a86b98  pipeline=start obs_host=127.0.0.1 obs_port=1 worker_host=127.0.0.1 worker_port=1
+2026-04-22 01:46:38.008 cid=2ede6bd384574d3eb3cec5be79a86b98  stage=obs_save start script=C:\ReplayTrove\scripts\obs_save_replay.ps1 host=127.0.0.1 port=1
+2026-04-22 01:46:42.103 cid=2ede6bd384574d3eb3cec5be79a86b98  stage=obs_save exit_code=1
+2026-04-22 01:46:42.125 cid=2ede6bd384574d3eb3cec5be79a86b98  pipeline=fail reason=obs_save_replay failed (exit_code=1)
+2026-04-22 01:47:18.129 cid=ff918fde24f34aeb846f5558bd0adc83  pipeline=start obs_host=127.0.0.1 obs_port=1 worker_host=127.0.0.1 worker_port=1
+2026-04-22 01:47:18.152 cid=ff918fde24f34aeb846f5558bd0adc83  stage=obs_save password_missing=true note=attempting_without_password_if_obs_requires_auth_this_will_fail
+2026-04-22 01:47:18.155 cid=ff918fde24f34aeb846f5558bd0adc83  stage=obs_save start script=C:\ReplayTrove\scripts\obs_save_replay.ps1 host=127.0.0.1 port=1
+2026-04-22 01:47:18.167 cid=ff918fde24f34aeb846f5558bd0adc83  pipeline=fail reason=Cannot validate argument on parameter 'ArgumentList'. The argument is null or empty. Provide an argument that is not null or empty, and then try the command again.
+2026-04-22 01:47:39.947 cid=dae008a89e864d4689df368ef15d9868  pipeline=start obs_host=127.0.0.1 obs_port=1 worker_host=127.0.0.1 worker_port=1
+2026-04-22 01:47:39.958 cid=dae008a89e864d4689df368ef15d9868  stage=obs_save password_missing=true note=attempting_without_password_if_obs_requires_auth_this_will_fail
+2026-04-22 01:47:39.961 cid=dae008a89e864d4689df368ef15d9868  stage=obs_save start script=C:\ReplayTrove\scripts\obs_save_replay.ps1 host=127.0.0.1 port=1
+2026-04-22 01:47:44.053 cid=dae008a89e864d4689df368ef15d9868  stage=obs_save exit_code=1
+2026-04-22 01:47:44.073 cid=dae008a89e864d4689df368ef15d9868  pipeline=fail reason=obs_save_replay failed (exit_code=1)
+2026-04-22 01:48:13.882 cid=62306b0326e042cab667acee426c78de  pipeline=start obs_host=127.0.0.1 obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 01:48:13.900 cid=62306b0326e042cab667acee426c78de  stage=obs_save skipped=true
+2026-04-22 01:48:13.909 cid=62306b0326e042cab667acee426c78de  stage=worker_trigger mode=trigger_file created=c:\ReplayTrove\state\instant_replay.trigger
+2026-04-22 01:48:13.941 cid=62306b0326e042cab667acee426c78de  stage=scoreboard_replay_on start script=C:\ReplayTrove\scripts\send_command.ps1
+2026-04-22 01:48:16.042 cid=62306b0326e042cab667acee426c78de  stage=scoreboard_replay_on exit_code=1
+2026-04-22 01:48:16.062 cid=62306b0326e042cab667acee426c78de  pipeline=fail reason=send_command replay_on failed (exit_code=1)
+2026-04-22 01:49:02.199 cid=038dd0a5150e4912a5693ad203051608  pipeline=start obs_host=127.0.0.1 obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 01:49:02.206 cid=038dd0a5150e4912a5693ad203051608  stage=obs_save skipped=true
+2026-04-22 01:49:02.218 cid=038dd0a5150e4912a5693ad203051608  stage=worker_trigger mode=trigger_file touched=c:\ReplayTrove\state\instant_replay.trigger
+2026-04-22 01:49:02.253 cid=038dd0a5150e4912a5693ad203051608  stage=scoreboard_replay_on start script=C:\ReplayTrove\scripts\send_command.ps1
+2026-04-22 01:49:02.368 cid=038dd0a5150e4912a5693ad203051608  pipeline=fail reason=The variable '$LASTEXITCODE' cannot be retrieved because it has not been set.
+2026-04-22 01:49:18.381 cid=896ac7b4b301476c9a5100ff59a96515  pipeline=start obs_host=127.0.0.1 obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 01:49:18.388 cid=896ac7b4b301476c9a5100ff59a96515  stage=obs_save skipped=true
+2026-04-22 01:49:18.398 cid=896ac7b4b301476c9a5100ff59a96515  stage=worker_trigger mode=trigger_file touched=c:\ReplayTrove\state\instant_replay.trigger
+2026-04-22 01:49:18.428 cid=896ac7b4b301476c9a5100ff59a96515  stage=scoreboard_replay_on start script=C:\ReplayTrove\scripts\send_command.ps1
+2026-04-22 01:49:18.527 cid=896ac7b4b301476c9a5100ff59a96515  stage=scoreboard_replay_on exit_code=0
+2026-04-22 01:49:18.533 cid=896ac7b4b301476c9a5100ff59a96515  pipeline=success
+2026-04-22 09:06:04.041 cid=3713152a3b49429ea10fbb83a46c7489  config_unified_parse_error path=C:\ReplayTrove\config\settings.json error=A parameter cannot be found that matches parameter name 'AsHashtable'.
+2026-04-22 09:06:04.090 cid=3713152a3b49429ea10fbb83a46c7489  config_sources obs_host=default obs_port=default obs_password=default worker_host=default worker_port=default worker_timeout=default canonical_token=default precedence=param>unified>env>default unified_found=True
+2026-04-22 09:06:04.093 cid=3713152a3b49429ea10fbb83a46c7489  config_fallback_warning replay_trigger_http_* fell_back_past_unified preferred_unified_keys=worker.httpReplayTriggerHost,worker.httpReplayTriggerPort,worker.httpReplayTriggerTimeoutSec
+2026-04-22 09:06:04.096 cid=3713152a3b49429ea10fbb83a46c7489  config_fallback_warning replay_canonical_token_missing requests will be classified untrusted
+2026-04-22 09:06:04.098 cid=3713152a3b49429ea10fbb83a46c7489  pipeline=start obs_host=127.0.0.1 obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 09:06:04.101 cid=3713152a3b49429ea10fbb83a46c7489  stage=obs_save skipped=true
+2026-04-22 09:06:04.112 cid=3713152a3b49429ea10fbb83a46c7489  stage=worker_trigger mode=trigger_file created=C:\ReplayTrove\state\phase2_config_convergence_test.trigger
+2026-04-22 09:06:04.114 cid=3713152a3b49429ea10fbb83a46c7489  stage=scoreboard_replay_on skipped=true
+2026-04-22 09:06:04.115 cid=3713152a3b49429ea10fbb83a46c7489  pipeline=success
+2026-04-22 09:18:41.468 cid=87a552eea15148c897c27466088f21ca  config_unified_parse_error path=C:\ReplayTrove\config\settings.json error=A parameter cannot be found that matches parameter name 'AsHashtable'.
+2026-04-22 09:18:41.516 cid=87a552eea15148c897c27466088f21ca  config_sources obs_host=default obs_port=default obs_password=default worker_host=default worker_port=default worker_timeout=default canonical_token=default precedence=param>unified>env>default unified_found=True
+2026-04-22 09:18:41.519 cid=87a552eea15148c897c27466088f21ca  config_fallback_warning replay_trigger_http_* fell_back_past_unified preferred_unified_keys=worker.httpReplayTriggerHost,worker.httpReplayTriggerPort,worker.httpReplayTriggerTimeoutSec
+2026-04-22 09:18:41.521 cid=87a552eea15148c897c27466088f21ca  config_fallback_warning obs_websocket_password fell_back_past_unified preferred_unified_key=scoreboard.obsWebsocketPassword
+2026-04-22 09:18:41.526 cid=87a552eea15148c897c27466088f21ca  config_fallback_warning replay_canonical_token_missing requests will be classified untrusted
+2026-04-22 09:18:41.528 cid=87a552eea15148c897c27466088f21ca  pipeline=start obs_host=127.0.0.1 obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 09:18:41.531 cid=87a552eea15148c897c27466088f21ca  stage=obs_save skipped=true
+2026-04-22 09:18:41.542 cid=87a552eea15148c897c27466088f21ca  stage=worker_trigger mode=trigger_file created=C:\ReplayTrove\state\obs_password_unified_test.trigger
+2026-04-22 09:18:41.546 cid=87a552eea15148c897c27466088f21ca  stage=scoreboard_replay_on skipped=true
+2026-04-22 09:18:41.548 cid=87a552eea15148c897c27466088f21ca  pipeline=success
+2026-04-22 09:22:39.210 cid=95268ce7da634dadaee219116e5400fe  config_unified_parse_error path=C:\ReplayTrove\config\settings.json error=A parameter cannot be found that matches parameter name 'AsHashtable'.
+2026-04-22 09:22:39.261 cid=95268ce7da634dadaee219116e5400fe  config_sources obs_host=default obs_port=default obs_password=default worker_host=default worker_port=default worker_timeout=default canonical_token=default precedence=param>unified>env>default unified_found=True
+2026-04-22 09:22:39.264 cid=95268ce7da634dadaee219116e5400fe  config_fallback_warning replay_trigger_http_* fell_back_past_unified preferred_unified_keys=worker.httpReplayTriggerHost,worker.httpReplayTriggerPort,worker.httpReplayTriggerTimeoutSec
+2026-04-22 09:22:39.266 cid=95268ce7da634dadaee219116e5400fe  config_fallback_warning obs_websocket_host_port fell_back_past_unified preferred_unified_keys=scoreboard.obsWebsocketHost,scoreboard.obsWebsocketPort
+2026-04-22 09:22:39.267 cid=95268ce7da634dadaee219116e5400fe  config_fallback_warning obs_websocket_password fell_back_past_unified preferred_unified_key=scoreboard.obsWebsocketPassword
+2026-04-22 09:22:39.271 cid=95268ce7da634dadaee219116e5400fe  config_fallback_warning replay_canonical_token_missing requests will be classified untrusted
+2026-04-22 09:22:39.273 cid=95268ce7da634dadaee219116e5400fe  pipeline=start obs_host=localhost obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 09:22:39.277 cid=95268ce7da634dadaee219116e5400fe  stage=obs_save skipped=true
+2026-04-22 09:22:39.286 cid=95268ce7da634dadaee219116e5400fe  stage=worker_trigger mode=trigger_file created=C:\ReplayTrove\state\obs_host_port_convergence_test.trigger
+2026-04-22 09:22:39.288 cid=95268ce7da634dadaee219116e5400fe  stage=scoreboard_replay_on skipped=true
+2026-04-22 09:22:39.289 cid=95268ce7da634dadaee219116e5400fe  pipeline=success

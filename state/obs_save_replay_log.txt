@@ -1,0 +1,64 @@
+2026-04-21 23:41:01.922  Starting OBS save replay request
+2026-04-21 23:41:02.001  Connected to OBS websocket
+2026-04-21 23:41:02.017  Hello: {"d":{"authentication":{"challenge":"OgvDXOhkLsqvr+3wrQG6fbE1JX2fQbYroJXSv9SHZqE=","salt":"j3b12MuNBdxJ4mC9QYzyP+OKHYxnJK9oDeHebSvYxl4="},"obsStudioVersion":"32.0.4","obsWebSocketVersion":"5.6.3","rpcVersion":1},"op":0}
+2026-04-21 23:41:02.070  Auth challenge received; auth response generated
+2026-04-21 23:41:02.089  Identify sent
+2026-04-21 23:41:02.091  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-21 23:41:02.097  SaveReplayBuffer request sent
+2026-04-21 23:41:02.099  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-21 23:41:02.102  OBS replay buffer save succeeded
+2026-04-21 23:43:13.260  Starting OBS save replay request
+2026-04-21 23:43:13.332  Connected to OBS websocket
+2026-04-21 23:43:13.345  Hello: {"d":{"authentication":{"challenge":"zXH2jhcgJc4Ddbv2MktIOnR5KY6OaSgA3bZkD4mDgTI=","salt":"j3b12MuNBdxJ4mC9QYzyP+OKHYxnJK9oDeHebSvYxl4="},"obsStudioVersion":"32.0.4","obsWebSocketVersion":"5.6.3","rpcVersion":1},"op":0}
+2026-04-21 23:43:13.398  Auth challenge received; auth response generated
+2026-04-21 23:43:13.405  Identify sent
+2026-04-21 23:43:13.408  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-21 23:43:13.414  SaveReplayBuffer request sent
+2026-04-21 23:43:13.415  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-21 23:43:13.419  OBS replay buffer save succeeded
+2026-04-21 23:43:39.414  Starting OBS save replay request
+2026-04-21 23:43:39.480  Connected to OBS websocket
+2026-04-21 23:43:39.494  Hello: {"d":{"authentication":{"challenge":"1SYH7oVjBRSKVc6pATMzoYC5fs+EOc54vvEAMK3lDYg=","salt":"j3b12MuNBdxJ4mC9QYzyP+OKHYxnJK9oDeHebSvYxl4="},"obsStudioVersion":"32.0.4","obsWebSocketVersion":"5.6.3","rpcVersion":1},"op":0}
+2026-04-21 23:43:39.546  Auth challenge received; auth response generated
+2026-04-21 23:43:39.556  Identify sent
+2026-04-21 23:43:39.558  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-21 23:43:39.564  SaveReplayBuffer request sent
+2026-04-21 23:43:39.566  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-21 23:43:39.570  OBS replay buffer save succeeded
+2026-04-21 23:51:27.889  Starting OBS save replay request
+2026-04-21 23:51:27.961  Connected to OBS websocket
+2026-04-21 23:51:27.974  Hello: {"d":{"authentication":{"challenge":"IQmXXjTfEc40OvLlszNMPmkIBUgo1JCfg7WHQsyIa7o=","salt":"j3b12MuNBdxJ4mC9QYzyP+OKHYxnJK9oDeHebSvYxl4="},"obsStudioVersion":"32.0.4","obsWebSocketVersion":"5.6.3","rpcVersion":1},"op":0}
+2026-04-21 23:51:28.023  Auth challenge received; auth response generated
+2026-04-21 23:51:28.032  Identify sent
+2026-04-21 23:51:28.033  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-21 23:51:28.039  SaveReplayBuffer request sent
+2026-04-21 23:51:28.041  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-21 23:51:28.045  OBS replay buffer save succeeded
+2026-04-22 00:03:07.753  Starting OBS save replay request
+2026-04-22 00:03:07.824  Connected to OBS websocket
+2026-04-22 00:03:07.837  Hello: {"d":{"authentication":{"challenge":"Lm/eoiR/BsfUSZqNhFlS20h76FdJWWUDL9PfdJlSJVo=","salt":"j3b12MuNBdxJ4mC9QYzyP+OKHYxnJK9oDeHebSvYxl4="},"obsStudioVersion":"32.0.4","obsWebSocketVersion":"5.6.3","rpcVersion":1},"op":0}
+2026-04-22 00:03:07.885  Auth challenge received; auth response generated
+2026-04-22 00:03:07.894  Identify sent
+2026-04-22 00:03:07.897  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-22 00:03:07.902  SaveReplayBuffer request sent
+2026-04-22 00:03:07.903  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-22 00:03:07.907  OBS replay buffer save succeeded
+2026-04-22 00:28:41.502  Starting OBS save replay request
+2026-04-22 00:28:41.564  Connected to OBS websocket
+2026-04-22 00:28:41.575  Hello: {"d":{"authentication":{"challenge":"MUExWUglF4JDrU7xR0utv2L8OPNgX7GLH/YwqY+FQSc=","salt":"j3b12MuNBdxJ4mC9QYzyP+OKHYxnJK9oDeHebSvYxl4="},"obsStudioVersion":"32.0.4","obsWebSocketVersion":"5.6.3","rpcVersion":1},"op":0}
+2026-04-22 00:28:41.626  Auth challenge received; auth response generated
+2026-04-22 00:28:41.644  Identify sent
+2026-04-22 00:28:41.646  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-22 00:28:41.651  SaveReplayBuffer request sent
+2026-04-22 00:28:41.652  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-22 00:28:41.655  OBS replay buffer save succeeded
+2026-04-22 01:33:52.770  Starting OBS save replay request
+2026-04-22 01:33:54.855  ERROR: Exception calling "GetResult" with "0" argument(s): "Unable to connect to the remote server"
+2026-04-22 01:36:55.132  Starting OBS save replay request
+2026-04-22 01:36:57.220  ERROR: Exception calling "GetResult" with "0" argument(s): "Unable to connect to the remote server"
+2026-04-22 01:42:10.511 cid=2e93bcb7e54e4ec6847480d4078a0e90  Starting OBS save replay request
+2026-04-22 01:42:12.611 cid=2e93bcb7e54e4ec6847480d4078a0e90  ERROR: Exception calling "GetResult" with "0" argument(s): "Unable to connect to the remote server"
+2026-04-22 01:46:39.157 cid=2ede6bd384574d3eb3cec5be79a86b98  Starting OBS save replay request
+2026-04-22 01:46:41.255 cid=2ede6bd384574d3eb3cec5be79a86b98  ERROR: Exception calling "GetResult" with "0" argument(s): "Unable to connect to the remote server"
+2026-04-22 01:47:41.156 cid=dae008a89e864d4689df368ef15d9868  Starting OBS save replay request
+2026-04-22 01:47:43.232 cid=dae008a89e864d4689df368ef15d9868  ERROR: Exception calling "GetResult" with "0" argument(s): "Unable to connect to the remote server"

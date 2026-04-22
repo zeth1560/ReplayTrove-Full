@@ -170,7 +170,7 @@
       clearInterval(tickTimer);
       tickTimer = null;
     }
-    const keys = (dismissKeys && dismissKeys.length) ? dismissKeys.join(" / ") : "Dismiss hotkey";
+    const keys = (dismissKeys && dismissKeys.length) ? dismissKeys.join(" / ") : "a key";
     dismissHint.textContent =
       "Press " + keys + " on this source (OBS: right-click browser → Interact) or use the Stream Deck dismiss action.";
   }

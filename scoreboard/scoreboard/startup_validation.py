@@ -10,11 +10,9 @@ from pathlib import Path
 
 from scoreboard.config.settings import Settings, SUPPORTED_IMAGE_EXTENSIONS, summarize_settings
 from scoreboard.obs_restart import resolve_obs_executable
-from scoreboard.hotkeys import parse_recording_hotkey_to_tk_bind
 from scoreboard.version import __version__
 
 _LOG = logging.getLogger(__name__)
-
 
 def _mpv_candidates(settings: Settings) -> list[str]:
     candidates: list[str] = []
@@ -111,19 +109,6 @@ def validate_startup_critical(settings: Settings) -> None:
         except OSError:
             _LOG.exception("State file unreadable (will reset on load): %s", state_path)
 
-    for name, spec, default in (
-        ("RECORDING_START_HOTKEY", settings.recording_start_hotkey, "Ctrl+Shift+g"),
-        ("RECORDING_DISMISS_HOTKEY", settings.recording_dismiss_hotkey, "Ctrl+Alt+m"),
-        ("BLACK_SCREEN_HOTKEY", settings.black_screen_hotkey, "Ctrl+Shift+b"),
-    ):
-        if parse_recording_hotkey_to_tk_bind(spec) is None:
-            _LOG.warning(
-                "%s=%r invalid; binding will fall back toward %r at runtime",
-                name,
-                spec,
-                default,
-            )
-
     if errors:
         for msg in errors:
             _LOG.error("Startup validation failed: %s", msg)
@@ -145,16 +130,6 @@ def log_pilot_diagnostics_summary(
     loading_frames_ok = all(
         (loading_dir / f"Loading{i:02d}.png").is_file() for i in range(1, 12)
     )
-
-    hotkey_lines = []
-    for label, spec in (
-        ("record_start", settings.recording_start_hotkey),
-        ("record_dismiss", settings.recording_dismiss_hotkey),
-        ("black_screen", settings.black_screen_hotkey),
-        ("replay_buffer_loading", settings.replay_buffer_loading_hotkey),
-    ):
-        p = parse_recording_hotkey_to_tk_bind(spec)
-        hotkey_lines.append(f"    {label}: {spec!r} -> {p!r}")
 
     st = Path(settings.state_file)
     state_note = "present" if st.is_file() else "absent (will create on save)"
@@ -213,8 +188,9 @@ def log_pilot_diagnostics_summary(
         f"poll_ms={settings.obs_status_poll_interval_ms} "
         f"require_main_idle={settings.obs_status_require_main_output_idle}\n"
         f"  scoreboard_debug={settings.scoreboard_debug}\n"
-        f"  hotkeys:\n"
-        + "\n".join(hotkey_lines)
+        f"  command_bus_commands_root={settings.commands_root!r}\n"
+        f"  command_bus_scoreboard_pending_dir={str(Path(settings.commands_root) / 'scoreboard' / 'pending')!r}\n"
+        f"  mpv_exit_hotkey={settings.mpv_exit_hotkey!r}\n"
     )
     _LOG.info("%s", summary)
     _LOG.info("Full settings snapshot:\n%s", summarize_settings(settings))

@@ -49,8 +49,8 @@ class AfterScheduler:
         When ``background_resilience`` is True and ``name`` is set, repeated uncaught
         exceptions (excluding TclError) increment a per-name counter; after
         ``max_consecutive_failures`` the job name is disabled and further schedules
-        with that name are skipped. Successful runs reset the counter. Hotkey paths
-        do not use this; only recurring background work should.
+        with that name are skipped. Successful runs reset the counter. Interactive
+        operator paths do not use this; only recurring background work should.
         """
         label = name or ""
 
@@ -65,9 +65,14 @@ class AfterScheduler:
                 )
                 return None
 
+        jid_holder: dict[str, str] = {}
+
         def wrapper() -> None:
-            self._jobs.discard(jid)
-            self._job_names.pop(jid, None)
+            jid = jid_holder.get("jid")
+            if jid:
+                self._jobs.discard(jid)
+                self._job_names.pop(jid, None)
+
             if self._alive_check is not None and not self._alive_check():
                 if self._debug_schedule and label:
                     self._log.debug("after skipped (app not alive) name=%r", label)
@@ -100,6 +105,7 @@ class AfterScheduler:
                         )
 
         jid = self._root.after(delay_ms, wrapper)
+        jid_holder["jid"] = jid
         self._jobs.add(jid)
         if name:
             self._job_names[jid] = name

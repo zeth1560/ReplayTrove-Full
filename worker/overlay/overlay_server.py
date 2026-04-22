@@ -4,7 +4,7 @@ Local HTTP server for the OBS recording countdown overlay.
 - Serves ``recording_countdown_overlay.html`` (Browser Source URL: http://127.0.0.1:<port>/).
 - Stream Deck / scripts: GET or POST ``/api/start-recording-countdown`` to begin a 20-minute timer.
 - When time expires, clients show the max-length message until ``/api/dismiss-ended`` (POST JSON ``{"key":"..."}``)
-  or matching configured hotkey.
+  or keys configured in ``RECORDING_OVERLAY_DISMISS_KEYS`` in the browser overlay.
 
 Environment:
   RECORDING_OVERLAY_HOST (default 127.0.0.1)

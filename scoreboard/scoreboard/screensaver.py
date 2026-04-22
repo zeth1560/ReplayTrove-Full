@@ -15,7 +15,7 @@ from scoreboard.scheduler import AfterScheduler, JobGroup
 
 _LOG = logging.getLogger(__name__)
 
-# While slideshow is up, periodically bring the Tk window forward so Stream Deck / hotkeys
+# While slideshow is up, periodically bring the Tk window forward so Stream Deck / scripts
 # still reach this app after the focus watchdog has stopped (~few minutes post-start).
 _SCREENSAVER_FOCUS_RECLAIM_MS = 2500
 

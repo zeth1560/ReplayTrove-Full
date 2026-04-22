@@ -9,13 +9,14 @@ import threading
 import time
 import tkinter as tk
 from collections.abc import Callable
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageTk
 
-from scoreboard.config.settings import Settings, load_settings
-from scoreboard.hotkeys import bind_recording_hotkey, bind_recording_hotkey_global
+from scoreboard.config.settings import DEFAULT_COMMANDS_ROOT, Settings, load_settings
+from scoreboard.config.unified_adapter import load_scoreboard_unified_snapshot
 from scoreboard.obs_health import check_obs_recording_gate, probe_obs_video_recorder_ready
 from scoreboard.encoder_status_overlay import EncoderStatusOverlay
 from scoreboard.persistence.score_store import load_scores, save_scores
@@ -41,14 +42,20 @@ _OPERATOR_FG_STUCK_WARN_COOLDOWN_SEC = 90.0
 _REC_OVERLAY_NOT_FG_WARN_COOLDOWN_SEC = 45.0
 _FOCUS_RECLAIM_FAIL_DIAG_THRESHOLD = 5
 
-# Stream Deck: three simultaneous plain-key buttons (q + r + p) → OBS restart (optional).
-_OBS_RESTART_CHORD_KEYS = frozenset({"q", "r", "p"})
-_OBS_RESTART_CHORD_DEBOUNCE_MS = 75
+# OBS restart pipeline (optional): triggered via command file when OBS_RESTART_CHORD_ENABLED=1.
 _OBS_RESTART_COOLDOWN_SEC = 8.0
 
-COMMANDS_PENDING_DIR = r"C:\ReplayTrove\commands\scoreboard\pending"
-COMMANDS_PROCESSED_DIR = r"C:\ReplayTrove\commands\scoreboard\processed"
-COMMANDS_FAILED_DIR = r"C:\ReplayTrove\commands\scoreboard\failed"
+SAFE_RELOAD_STATUS_PATH = r"C:\ReplayTrove\scoreboard\reload_safe_settings_status.json"
+
+_SAFE_RELOAD_MIN_MS = 100
+_SAFE_RELOAD_MAX_MS = 60_000
+
+
+@dataclass(frozen=True)
+class RuntimeSafeSettings:
+    # Deliberately tiny live-reload snapshot (Phase 5 allowlist only).
+    obs_status_poll_interval_ms: int
+    encoder_status_poll_ms: int
 
 
 class ScoreboardApp:
@@ -62,6 +69,36 @@ class ScoreboardApp:
             logger=_LOG.getChild("scheduler"),
             debug_schedule=self.settings.scoreboard_debug,
             alive_check=self._app_is_alive,
+        )
+        self._runtime_safe_lock = threading.Lock()
+        self._runtime_safe_settings = RuntimeSafeSettings(
+            obs_status_poll_interval_ms=int(self.settings.obs_status_poll_interval_ms),
+            encoder_status_poll_ms=int(self.settings.encoder_status_poll_ms),
+        )
+        self._commands_root = Path(self.settings.commands_root)
+        self._commands_pending_dir = str(self._commands_root / "scoreboard" / "pending")
+        self._commands_processed_dir = str(
+            self._commands_root / "scoreboard" / "processed"
+        )
+        self._commands_failed_dir = str(self._commands_root / "scoreboard" / "failed")
+        self._legacy_commands_root = Path(DEFAULT_COMMANDS_ROOT)
+        self._legacy_pending_dir = str(
+            self._legacy_commands_root / "scoreboard" / "pending"
+        )
+        self._command_pending_scan_dirs: list[str] = [self._commands_pending_dir]
+        if Path(self._legacy_pending_dir) != Path(self._commands_pending_dir):
+            self._command_pending_scan_dirs.append(self._legacy_pending_dir)
+            self.logger.warning(
+                "scoreboard command bus root diverged from legacy path configured_root=%s legacy_root=%s compatibility_bridge=legacy_pending_enabled",
+                str(self._commands_root),
+                str(self._legacy_commands_root),
+            )
+        self.logger.info(
+            "scoreboard command bus directories pending=%s processed=%s failed=%s pending_scan_dirs=%s",
+            self._commands_pending_dir,
+            self._commands_processed_dir,
+            self._commands_failed_dir,
+            self._command_pending_scan_dirs,
         )
 
         state_path = Path(self.settings.state_file)
@@ -80,8 +117,6 @@ class ScoreboardApp:
         self._heartbeat_job: str | None = None
         self._operator_ui_heartbeat_job: str | None = None
         self._recording_obs_check_in_flight = False
-        self._obs_chord_pressed: set[str] = set()
-        self._obs_chord_job: str | None = None
         self._obs_restart_last_mono = 0.0
         self._obs_status_win: tk.Toplevel | None = None
         self._obs_status_inner: tk.Frame | None = None
@@ -249,18 +284,37 @@ class ScoreboardApp:
 
     def check_for_commands(self) -> None:
         try:
-            pending = Path(COMMANDS_PENDING_DIR)
-            if not pending.is_dir():
-                return
-            json_files = sorted(
-                p
-                for p in pending.iterdir()
-                if p.is_file()
-                and p.suffix.lower() == ".json"
-                and not p.name.endswith(".tmp")
-            )
-            for path in json_files:
+            all_json_files: list[Path] = []
+            for pending_dir in self._command_pending_scan_dirs:
+                pending = Path(pending_dir)
+                if not pending.is_dir():
+                    continue
+                json_files = sorted(
+                    p
+                    for p in pending.iterdir()
+                    if p.is_file()
+                    and p.suffix.lower() == ".json"
+                    and not p.name.endswith(".tmp")
+                )
+                all_json_files.extend(json_files)
+
+            seen: set[str] = set()
+            for path in sorted(all_json_files):
+                path_key = str(path.resolve())
+                if path_key in seen:
+                    continue
+                seen.add(path_key)
                 try:
+                    if (
+                        Path(path).parent == Path(self._legacy_pending_dir)
+                        and Path(self._legacy_pending_dir)
+                        != Path(self._commands_pending_dir)
+                    ):
+                        self.logger.warning(
+                            "command_bus_legacy_bridge path=%s configured_pending=%s",
+                            path,
+                            self._commands_pending_dir,
+                        )
                     self.process_command_file(str(path))
                 except Exception as e:
                     self.logger.error(f"command_poll_error: {e}")
@@ -305,6 +359,7 @@ class ScoreboardApp:
         path_obj = Path(path)
         cmd_id = "?"
         action = "?"
+        cid = "-"
         ok = False
         try:
             with path_obj.open(encoding="utf-8") as f:
@@ -316,22 +371,24 @@ class ScoreboardApp:
             args = payload.get("args") or {}
             if not isinstance(args, dict):
                 raise TypeError("args must be a JSON object")
+            cid = str(args.get("correlation_id") or payload.get("correlation_id") or "-")
             self.logger.info(
-                "command_received id=%s action=%s args=%s",
+                "command_received id=%s cid=%s action=%s args=%s",
                 cmd_id,
+                cid,
                 action,
                 args,
             )
             self.handle_command(action, args)
             ok = True
-            self.logger.info("command_completed id=%s action=%s", cmd_id, action)
+            self.logger.info("command_completed id=%s cid=%s action=%s", cmd_id, cid, action)
         except Exception as e:
-            self.logger.error("command_failed path=%s error=%s", path, e)
+            self.logger.error("command_failed path=%s id=%s cid=%s action=%s error=%s", path, cmd_id, cid, action, e)
 
         if not path_obj.is_file():
             return
 
-        primary_dir = COMMANDS_PROCESSED_DIR if ok else COMMANDS_FAILED_DIR
+        primary_dir = self._commands_processed_dir if ok else self._commands_failed_dir
         if self._command_try_move(path_obj, primary_dir):
             return
 
@@ -340,7 +397,7 @@ class ScoreboardApp:
             path,
             f"relocate_to_{'processed' if ok else 'failed'}_failed",
         )
-        if ok and self._command_try_move(path_obj, COMMANDS_FAILED_DIR):
+        if ok and self._command_try_move(path_obj, self._commands_failed_dir):
             return
         if ok:
             self.logger.error(
@@ -370,8 +427,48 @@ class ScoreboardApp:
         elif action == "black_screen_off":
             self.disable_black_screen()
         elif action == "toggle_replay":
+            self.logger.warning(
+                "replay_command_deprecated action=toggle_replay; use replay_on/replay_off (non-canonical operator path)",
+            )
             self.toggle_replay()
         elif action == "replay_on":
+            trigger_source = args.get("trigger_source")
+            if not isinstance(trigger_source, str):
+                trigger_source = None
+            trust_category = args.get("canonical_trust_category")
+            if trust_category not in {
+                "canonical_trusted",
+                "canonical_claim_untrusted",
+                "legacy_noncanonical",
+            }:
+                if trigger_source == "save_replay_and_trigger.ps1":
+                    trust_category = "canonical_claim_untrusted"
+                else:
+                    trust_category = "legacy_noncanonical"
+            trust_reason = args.get("canonical_trust_reason")
+            if not isinstance(trust_reason, str) or not trust_reason.strip():
+                trust_reason = "missing_trust_reason"
+            if trust_category == "canonical_trusted":
+                self.logger.info(
+                    "replay_command_trust action=replay_on trust_category=%s trust_reason=%s trigger_source=%s",
+                    trust_category,
+                    trust_reason,
+                    trigger_source,
+                )
+            elif trust_category == "canonical_claim_untrusted":
+                self.logger.warning(
+                    "replay_command_trust action=replay_on trust_category=%s trust_reason=%s trigger_source=%s canonical_source=save_replay_and_trigger.ps1",
+                    trust_category,
+                    trust_reason,
+                    trigger_source,
+                )
+            else:
+                self.logger.warning(
+                    "replay_command_trust action=replay_on trust_category=%s trust_reason=%s trigger_source=%s canonical_source=save_replay_and_trigger.ps1",
+                    trust_category,
+                    trust_reason,
+                    trigger_source,
+                )
             if self._replay_command_is_on():
                 self.logger.info(
                     "replay_command_noop action=replay_on reason=already_on",
@@ -411,8 +508,182 @@ class ScoreboardApp:
             self.increment_right(-amount)
         elif action == "reset_scores":
             self.reset_scores()
+        elif action == "recording_start":
+            self.on_streamdeck_input(self.on_recording_start_hotkey)
+        elif action == "recording_dismiss":
+            self.on_streamdeck_input(self._recording_dismiss_deferred)
+        elif action == "replay_buffer_loading":
+            self.on_streamdeck_input(self.start_replay_buffer_loading_overlay)
+        elif action == "obs_restart":
+            self.scheduler.schedule(0, self._command_obs_restart, name="command_obs_restart")
+        elif action == "dismiss_replay_unavailable":
+            self.replay.dismiss_replay_unavailable_overlay()
+        elif action == "reload_scoreboard_safe_settings":
+            self._reload_scoreboard_safe_settings(args)
         else:
             raise ValueError(f"unknown action: {action!r}")
+
+    def _read_runtime_safe_settings(self) -> RuntimeSafeSettings:
+        with self._runtime_safe_lock:
+            return self._runtime_safe_settings
+
+    def _replace_runtime_safe_settings(self, new_value: RuntimeSafeSettings) -> None:
+        # Atomic snapshot swap under lock; avoid in-place shared mutation.
+        with self._runtime_safe_lock:
+            self._runtime_safe_settings = new_value
+
+    def _reload_scoreboard_safe_settings(self, args: dict[str, Any]) -> None:
+        # Explicit, scoreboard-only safe reload entrypoint.
+        cid = str(args.get("correlation_id") or "-")
+        requested = [
+            "scoreboard.obsStatusPollIntervalMs",
+            "scoreboard.encoderStatusPollMs",
+        ]
+        self.logger.info(
+            "reload_attempted action=reload_scoreboard_safe_settings cid=%s requested_keys=%s",
+            cid,
+            requested,
+        )
+        try:
+            snap = load_scoreboard_unified_snapshot()
+            if snap.error:
+                self.logger.error(
+                    "reload_rejected action=reload_scoreboard_safe_settings cid=%s reason=config_parse_error error=%s",
+                    cid,
+                    snap.error,
+                )
+                self.logger.warning(
+                    "reload_fallback_preserved action=reload_scoreboard_safe_settings cid=%s reason=parse_error",
+                    cid,
+                )
+                self._write_safe_reload_status(
+                    cid=cid,
+                    status="rejected",
+                    applied_fields=[],
+                    rejection_reason=f"config_parse_error: {snap.error}",
+                    schema_version=snap.schema_version,
+                )
+                return
+
+            sb = snap.scoreboard or {}
+            obs_raw = sb.get("obsStatusPollIntervalMs")
+            enc_raw = sb.get("encoderStatusPollMs")
+            errors: list[str] = []
+            if not isinstance(obs_raw, int) or isinstance(obs_raw, bool):
+                errors.append("obsStatusPollIntervalMs must be integer")
+            if not isinstance(enc_raw, int) or isinstance(enc_raw, bool):
+                errors.append("encoderStatusPollMs must be integer")
+
+            if not errors:
+                if obs_raw < _SAFE_RELOAD_MIN_MS or obs_raw > _SAFE_RELOAD_MAX_MS:
+                    errors.append(
+                        f"obsStatusPollIntervalMs must be {_SAFE_RELOAD_MIN_MS}-{_SAFE_RELOAD_MAX_MS}"
+                    )
+                if enc_raw < _SAFE_RELOAD_MIN_MS or enc_raw > _SAFE_RELOAD_MAX_MS:
+                    errors.append(
+                        f"encoderStatusPollMs must be {_SAFE_RELOAD_MIN_MS}-{_SAFE_RELOAD_MAX_MS}"
+                    )
+
+            if errors:
+                self.logger.error(
+                    "reload_rejected action=reload_scoreboard_safe_settings cid=%s schema_version=%s reasons=%s",
+                    cid,
+                    snap.schema_version,
+                    errors,
+                )
+                self.logger.warning(
+                    "reload_fallback_preserved action=reload_scoreboard_safe_settings cid=%s reason=validation_failed",
+                    cid,
+                )
+                self._write_safe_reload_status(
+                    cid=cid,
+                    status="rejected",
+                    applied_fields=[],
+                    rejection_reason="; ".join(errors),
+                    schema_version=snap.schema_version,
+                )
+                return
+
+            old = self._read_runtime_safe_settings()
+            new = replace(
+                old,
+                obs_status_poll_interval_ms=int(obs_raw),
+                encoder_status_poll_ms=int(enc_raw),
+            )
+            self._replace_runtime_safe_settings(new)
+
+            # Idempotent timer refresh: each scheduler path cancels before scheduling.
+            self._schedule_obs_status_poll_after()
+            self._encoder_status_overlay.set_poll_interval_ms(new.encoder_status_poll_ms)
+
+            self.logger.info(
+                "reload_applied action=reload_scoreboard_safe_settings cid=%s schema_version=%s old_values=%s new_values=%s",
+                cid,
+                snap.schema_version,
+                {
+                    "obsStatusPollIntervalMs": old.obs_status_poll_interval_ms,
+                    "encoderStatusPollMs": old.encoder_status_poll_ms,
+                },
+                {
+                    "obsStatusPollIntervalMs": new.obs_status_poll_interval_ms,
+                    "encoderStatusPollMs": new.encoder_status_poll_ms,
+                },
+            )
+            self._write_safe_reload_status(
+                cid=cid,
+                status="applied",
+                applied_fields=requested,
+                rejection_reason=None,
+                schema_version=snap.schema_version,
+            )
+        except Exception as exc:
+            self.logger.error(
+                "reload_rejected action=reload_scoreboard_safe_settings cid=%s reason=unexpected_error error=%s",
+                cid,
+                exc,
+            )
+            self.logger.warning(
+                "reload_fallback_preserved action=reload_scoreboard_safe_settings cid=%s reason=unexpected_error",
+                cid,
+            )
+            self._write_safe_reload_status(
+                cid=cid,
+                status="rejected",
+                applied_fields=[],
+                rejection_reason=f"unexpected_error: {exc}",
+                schema_version=None,
+            )
+
+    def _write_safe_reload_status(
+        self,
+        *,
+        cid: str,
+        status: str,
+        applied_fields: list[str],
+        rejection_reason: str | None,
+        schema_version: int | None,
+    ) -> None:
+        # Read-only status artifact for Control Center queued-vs-applied clarity.
+        try:
+            payload: dict[str, Any] = {
+                "timestamp": utc_now_iso(),
+                "correlation_id": cid,
+                "status": status,
+                "applied_fields": applied_fields,
+                "schema_version": schema_version,
+            }
+            if rejection_reason:
+                payload["rejection_reason"] = rejection_reason
+            out = Path(SAFE_RELOAD_STATUS_PATH)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            tmp = out.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+            os.replace(tmp, out)
+        except Exception:
+            self.logger.debug(
+                "reload_safe_settings_status_write_failed",
+                exc_info=True,
+            )
 
     def _replay_command_is_on(self) -> bool:
         # Command bus "on" means replay is visible/playing OR mid-transition.
@@ -501,7 +772,7 @@ class ScoreboardApp:
     def _log_startup_readiness(self) -> None:
         log_path = (self.settings.scoreboard_log_file or "").strip()
         _LOG.info(
-            "Startup readiness: streamdeck_hotkeys=deferred replay_enabled=%s "
+            "Startup readiness: command_bus=ok replay_enabled=%s "
             "recording_overlay=ok scheduler=ok synthetic_focus_click=%s "
             "obs_recording_gate=%s encoder_recording_sync=%s obs_restart_chord=%s "
             "obs_status_indicator=%s log_file=%s",
@@ -738,7 +1009,7 @@ class ScoreboardApp:
                 post_black = f" seconds_since_black_screen_off={dt:.0f}"
         _LOG.warning(
             "operator_visibility: eligible reclaim but not operator-foreground for %.0fs "
-            "(UI likely behind another window; hotkeys may not reach scoreboard)%s snapshot=%s",
+                    "(UI likely behind another window; focus may not reach scoreboard)%s snapshot=%s",
             stuck_sec,
             post_black,
             self._diagnostic_ui_snapshot(),
@@ -943,7 +1214,7 @@ class ScoreboardApp:
             return
         self.scheduler.cancel(self._obs_status_poll_after)
         self._obs_status_poll_after = None
-        ms = self.settings.obs_status_poll_interval_ms
+        ms = self._read_runtime_safe_settings().obs_status_poll_interval_ms
         self._obs_status_poll_after = self.scheduler.schedule(
             ms,
             self._obs_status_poll_tick,
@@ -973,96 +1244,30 @@ class ScoreboardApp:
         self._obs_status_label = None
 
     def _bind_keys(self) -> None:
-        root = self.root
-        root.bind_all("q", lambda e, k="q": self._on_obs_restart_chord_key(k, e))
-        root.bind_all(
-            "a",
-            lambda e: self.on_streamdeck_input(lambda: self.update_score("a", -1)),
-        )
-        root.bind_all("p", lambda e, k="p": self._on_obs_restart_chord_key(k, e))
-        root.bind_all(
-            "l",
-            lambda e: self.on_streamdeck_input(lambda: self.update_score("b", -1)),
-        )
-        root.bind_all("r", lambda e, k="r": self._on_obs_restart_chord_key(k, e))
-        root.bind_all("i", lambda e: self.on_streamdeck_input(self.toggle_replay))
-        bind_recording_hotkey(
-            root,
-            self.settings.recording_start_hotkey,
-            "Ctrl+Shift+g",
-            lambda e: self.on_streamdeck_input(self.on_recording_start_hotkey),
-        )
-        bind_recording_hotkey_global(
-            root,
-            self.settings.recording_dismiss_hotkey,
-            "Ctrl+Alt+m",
-            self._on_recording_dismiss_chord,
-        )
-        # Extra binds: main canvas often holds focus; root as fallback.
-        bind_recording_hotkey(
-            self.canvas,
-            self.settings.recording_dismiss_hotkey,
-            "Ctrl+Alt+m",
-            self._on_recording_dismiss_chord,
-        )
-        bind_recording_hotkey(
-            root,
-            self.settings.recording_dismiss_hotkey,
-            "Ctrl+Alt+m",
-            self._on_recording_dismiss_chord,
-        )
-        bind_recording_hotkey_global(
-            root,
-            self.settings.black_screen_hotkey,
-            "Ctrl+Shift+b",
-            lambda e: self.on_streamdeck_input(self.toggle_black_screen),
-        )
-        root.bind_all(
+        """Keyboard: local emergency exit only. Operator controls use the command file bus."""
+        self.root.bind_all(
             "<Escape>",
             lambda e: self.scheduler.schedule(0, self.close_app, name="escape_close_app"),
         )
 
-    def _dispatch_chord_colocated_action(self, key: str) -> None:
-        if key == "q":
-            self.on_streamdeck_input(lambda: self.update_score("a", 1))
-        elif key == "p":
-            self.on_streamdeck_input(lambda: self.update_score("b", 1))
-        elif key == "r":
-            self.on_streamdeck_input(self.reset_scores)
-
-    def _on_obs_restart_chord_key(self, key: str, _event: tk.Event) -> None:
+    def _command_obs_restart(self) -> None:
+        if self.screensaver.is_active():
+            self.screensaver.stop()
         if not self.settings.obs_restart_chord_enabled:
-            self._dispatch_chord_colocated_action(key)
+            _LOG.info("obs_restart command ignored (OBS_RESTART_CHORD_ENABLED=0)")
             return
-        self._obs_chord_pressed.add(key)
-        self.scheduler.cancel(self._obs_chord_job)
-        self._obs_chord_job = self.scheduler.schedule(
-            _OBS_RESTART_CHORD_DEBOUNCE_MS,
-            self._flush_obs_restart_chord,
-            name="obs_restart_chord_debounce",
-        )
-
-    def _flush_obs_restart_chord(self) -> None:
-        self._obs_chord_job = None
-        pressed = self._obs_chord_pressed
-        self._obs_chord_pressed = set()
-        if pressed == _OBS_RESTART_CHORD_KEYS:
-            now = time.monotonic()
-            if now - self._obs_restart_last_mono < _OBS_RESTART_COOLDOWN_SEC:
-                _LOG.debug("OBS restart chord ignored (cooldown)")
-                return
-            self._obs_restart_last_mono = now
-            self._trigger_obs_restart_chord()
+        now = time.monotonic()
+        if now - self._obs_restart_last_mono < _OBS_RESTART_COOLDOWN_SEC:
+            _LOG.debug("obs_restart command ignored (cooldown)")
             return
-        for k in ("q", "p", "r"):
-            if k in pressed:
-                self._dispatch_chord_colocated_action(k)
+        self._obs_restart_last_mono = now
+        self._trigger_obs_restart_chord()
 
     def _trigger_obs_restart_chord(self) -> None:
         self.last_input_ms = int(time.monotonic() * 1000)
         if self.screensaver.is_active():
             self.screensaver.stop()
-        _LOG.info("OBS restart chord (Q+R+P): background restart scheduled")
+        _LOG.info("OBS restart: background pipeline scheduled")
         threading.Thread(target=self._obs_restart_worker, daemon=True).start()
 
     def _obs_restart_worker(self) -> None:
@@ -1121,7 +1326,7 @@ class ScoreboardApp:
         )
 
     def on_streamdeck_input(self, action: Callable[[], None]) -> None:
-        """Bind handlers call this only; work runs on the next event-loop tick."""
+        """Schedule an operator action on the Tk thread (used by command bus and UI buttons)."""
         self.scheduler.schedule(
             0,
             lambda a=action: self._run_streamdeck_action(a),
@@ -1142,7 +1347,9 @@ class ScoreboardApp:
             return
         if self.settings.recording_obs_health_check:
             if self._recording_obs_check_in_flight:
-                _LOG.debug("Recording OBS check already running; ignoring duplicate start hotkey")
+                _LOG.debug(
+                    "Recording OBS check already running; ignoring duplicate recording_start",
+                )
                 return
             self._recording_obs_check_in_flight = True
             threading.Thread(
@@ -1493,8 +1700,6 @@ class ScoreboardApp:
         _LOG.info("Application shutdown requested")
         self._obs_status_poll_busy = False
         self._recording_obs_check_in_flight = False
-        self.scheduler.cancel(self._obs_chord_job)
-        self._obs_chord_job = None
         self._teardown_obs_status_indicator()
         for jid in self._focus_claim_jobs:
             self.scheduler.cancel(jid)
@@ -1687,7 +1892,7 @@ class ScoreboardApp:
         if self.replay.dismiss_replay_unavailable_overlay() and not self.replay.showing_replay:
             return
         if not self.settings.replay_enabled:
-            _LOG.info("Replay hotkey ignored: REPLAY_ENABLED=0")
+            _LOG.info("Replay toggle ignored: REPLAY_ENABLED=0")
             return
         self.screensaver.stop()
         _LOG.info(

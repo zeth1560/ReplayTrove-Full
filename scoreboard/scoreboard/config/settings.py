@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
+from scoreboard.config.unified_adapter import load_scoreboard_unified_snapshot
 
-from scoreboard.hotkeys import parse_recording_hotkey_to_tk_bind
 
 _LOG = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ DEFAULT_SLIDESHOW_DIR = r"C:\Users\admin\Dropbox\slideshow"
 DEFAULT_REPLAY_VIDEO_PATH = r"C:\ReplayTrove\INSTANTREPLAY.mkv"
 DEFAULT_REPLAY_UNAVAILABLE_IMAGE = "assets/replay_unavailable.png"
 DEFAULT_REPLAY_BUFFER_LOADING_DIR = "assets/replay_buffer_loading"
+DEFAULT_COMMANDS_ROOT = r"C:\ReplayTrove\commands"
 DEFAULT_ENCODER_STATE_FILE = "encoder_state.json"
 DEFAULT_ENCODER_READY_IMAGE = "assets/recorderstatus/ready.png"
 DEFAULT_ENCODER_UNAVAILABLE_IMAGE = "assets/recorderstatus/unavailable.png"
@@ -153,6 +154,7 @@ class Settings:
     slideshow_dir: str
     replay_video_path: str
     replay_unavailable_image: str
+    commands_root: str
     mpv_path: str | None
 
     # mpv / replay
@@ -166,10 +168,6 @@ class Settings:
     recording_max_minutes: int
     recording_duration_sec: int
     recording_ended_hold_ms: int
-    recording_start_hotkey: str
-    recording_dismiss_hotkey: str
-    black_screen_hotkey: str
-    replay_buffer_loading_hotkey: str
     replay_buffer_loading_dir: str
     replay_buffer_loading_frame_ms: int
     replay_buffer_loading_margin_px: int
@@ -289,10 +287,111 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
     else:
         _LOG.info("No %s file; using process environment and defaults", env_file)
 
+    unified = load_scoreboard_unified_snapshot()
+    _LOG.info(
+        "scoreboard unified config: found=%s path=%s schema_version=%s migrated=%s scoreboard_section=%s obsffmpeg_section=%s",
+        unified.found,
+        str(unified.path),
+        unified.schema_version,
+        unified.migrated,
+        unified.scoreboard_section_loaded,
+        unified.obsffmpeg_section_loaded,
+    )
+    if unified.error:
+        _LOG.warning("scoreboard unified config parse failed: %s", unified.error)
+
+    unified_overrides: dict[str, str] = {}
+    source_notes: list[str] = []
+    def _set_u_str(env_key: str, value: object) -> None:
+        if isinstance(value, str):
+            _v = value.strip()
+            if _v:
+                unified_overrides[env_key] = _v
+
+    def _set_u_bool(env_key: str, value: object) -> None:
+        if isinstance(value, bool):
+            unified_overrides[env_key] = "1" if value else "0"
+
+    def _set_u_int(env_key: str, value: object) -> None:
+        if isinstance(value, int) and not isinstance(value, bool):
+            unified_overrides[env_key] = str(value)
+
+    _set_u_str("STATE_FILE", unified.scoreboard.get("stateFile"))
+    _set_u_str("COMMANDS_ROOT", unified.scoreboard.get("commandsRoot"))
+    _set_u_str(
+        "SCOREBOARD_BACKGROUND_IMAGE", unified.scoreboard.get("scoreboardBackgroundImage")
+    )
+    _set_u_str("REPLAY_SLATE_IMAGE", unified.scoreboard.get("replaySlateImage"))
+    _set_u_str("SLIDESHOW_DIR", unified.scoreboard.get("slideshowDir"))
+    _set_u_str("REPLAY_VIDEO_PATH", unified.scoreboard.get("replayVideoPath"))
+    _set_u_str(
+        "REPLAY_UNAVAILABLE_IMAGE", unified.scoreboard.get("replayUnavailableImage")
+    )
+    _set_u_bool("REPLAY_ENABLED", unified.scoreboard.get("replayEnabled"))
+    _set_u_bool("SLIDESHOW_ENABLED", unified.scoreboard.get("slideshowEnabled"))
+    _set_u_str("MPV_EXIT_HOTKEY", unified.scoreboard.get("mpvExitHotkey"))
+    _set_u_bool("MPV_EMBEDDED", unified.scoreboard.get("mpvEmbedded"))
+    _set_u_bool("MPV_FULLSCREEN_ENABLED", unified.scoreboard.get("mpvFullscreenEnabled"))
+    _set_u_bool("MPV_LOOP_ENABLED", unified.scoreboard.get("mpvLoopEnabled"))
+    _set_u_int(
+        "REPLAY_TRANSITION_TIMEOUT_MS",
+        unified.scoreboard.get("replayTransitionTimeoutMs"),
+    )
+    _set_u_int(
+        "REPLAY_SLATE_STUCK_TIMEOUT_MS", unified.scoreboard.get("replaySlateStuckTimeoutMs")
+    )
+    _set_u_int(
+        "REPLAY_FILE_MAX_AGE_SECONDS", unified.scoreboard.get("replayFileMaxAgeSeconds")
+    )
+    _set_u_str(
+        "REPLAY_BUFFER_LOADING_DIR", unified.scoreboard.get("replayBufferLoadingDir")
+    )
+    _set_u_int(
+        "REPLAY_BUFFER_LOADING_FRAME_MS",
+        unified.scoreboard.get("replayBufferLoadingFrameMs"),
+    )
+    _set_u_int(
+        "REPLAY_BUFFER_LOADING_MARGIN_PX",
+        unified.scoreboard.get("replayBufferLoadingMarginPx"),
+    )
+    _set_u_bool("ENCODER_STATUS_ENABLED", unified.scoreboard.get("encoderStatusEnabled"))
+    _set_u_str("ENCODER_STATE_PATH", unified.scoreboard.get("encoderStatePath"))
+    _set_u_int("ENCODER_STATUS_POLL_MS", unified.scoreboard.get("encoderStatusPollMs"))
+    _set_u_int(
+        "ENCODER_STATUS_STALE_SECONDS", unified.scoreboard.get("encoderStatusStaleSeconds")
+    )
+    _set_u_int("ENCODER_STATUS_MARGIN_PX", unified.scoreboard.get("encoderStatusMarginPx"))
+    _set_u_bool(
+        "SCOREBOARD_LAUNCHER_STATUS_ENABLED", unified.scoreboard.get("launcherStatusEnabled")
+    )
+    _set_u_str(
+        "SCOREBOARD_LAUNCHER_STATUS_PATH",
+        unified.scoreboard.get("launcherStatusJsonPath"),
+    )
+    _set_u_str("OBS_WEBSOCKET_HOST", unified.scoreboard.get("obsWebsocketHost"))
+    _set_u_int("OBS_WEBSOCKET_PORT", unified.scoreboard.get("obsWebsocketPort"))
+    _set_u_str("OBS_WEBSOCKET_PASSWORD", unified.scoreboard.get("obsWebsocketPassword"))
+    _set_u_bool(
+        "OBS_STATUS_INDICATOR_ENABLED", unified.scoreboard.get("obsStatusIndicatorEnabled")
+    )
+    _set_u_int(
+        "OBS_STATUS_POLL_INTERVAL_MS", unified.scoreboard.get("obsStatusPollIntervalMs")
+    )
+    _set_u_bool(
+        "OBS_STATUS_REQUIRE_MAIN_OUTPUT_IDLE",
+        unified.scoreboard.get("obsStatusRequireMainOutputIdle"),
+    )
+    _set_u_str("MPV_PATH", unified.obsffmpeg.get("mpvPath"))
+
     def g(key: str, default: str | None = None) -> str | None:
+        if key in unified_overrides:
+            source_notes.append(f"{key}=unified")
+            return unified_overrides[key]
         v = os.environ.get(key)
         if v is None or str(v).strip() == "":
+            source_notes.append(f"{key}=default")
             return default
+        source_notes.append(f"{key}=env")
         return str(v).strip()
 
     slideshow_dir = _normalize_path(
@@ -304,6 +403,10 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
     replay_unavailable_image = _normalize_path(
         g("REPLAY_UNAVAILABLE_IMAGE", DEFAULT_REPLAY_UNAVAILABLE_IMAGE)
     ) or DEFAULT_REPLAY_UNAVAILABLE_IMAGE
+    commands_root = _normalize_path(
+        g("COMMANDS_ROOT", DEFAULT_COMMANDS_ROOT) or DEFAULT_COMMANDS_ROOT
+    )
+    commands_root = str(Path(commands_root))
     mpv_path_raw = _normalize_path(g("MPV_PATH"))
     mpv_path = mpv_path_raw if mpv_path_raw else None
 
@@ -464,16 +567,6 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
         _normalize_path(g("REPLAY_SLATE_IMAGE", DEFAULT_REPLAY_SLATE)) or DEFAULT_REPLAY_SLATE
     )
 
-    recording_start = (
-        g("RECORDING_START_HOTKEY", "Ctrl+Shift+g") or "Ctrl+Shift+g"
-    ).strip()
-    recording_dismiss = (
-        g("RECORDING_DISMISS_HOTKEY", "Ctrl+Alt+m") or "Ctrl+Alt+m"
-    ).strip()
-    black_screen = (g("BLACK_SCREEN_HOTKEY", "Ctrl+Shift+b") or "Ctrl+Shift+b").strip()
-    replay_buffer_loading_hotkey = (
-        g("REPLAY_BUFFER_LOADING_HOTKEY", "t") or "t"
-    ).strip()
     replay_buffer_loading_dir = (
         _normalize_path(
             g("REPLAY_BUFFER_LOADING_DIR", DEFAULT_REPLAY_BUFFER_LOADING_DIR),
@@ -709,6 +802,7 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
         slideshow_dir=slideshow_dir,
         replay_video_path=replay_video_path,
         replay_unavailable_image=replay_unavailable_image,
+        commands_root=commands_root,
         mpv_path=mpv_path,
         mpv_exit_hotkey=mpv_exit,
         mpv_embedded=mpv_embedded,
@@ -732,10 +826,6 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
         recording_max_minutes=rec_minutes,
         recording_duration_sec=recording_duration_sec,
         recording_ended_hold_ms=recording_ended_hold_ms,
-        recording_start_hotkey=recording_start,
-        recording_dismiss_hotkey=recording_dismiss,
-        black_screen_hotkey=black_screen,
-        replay_buffer_loading_hotkey=replay_buffer_loading_hotkey,
         replay_buffer_loading_dir=replay_buffer_loading_dir,
         replay_buffer_loading_frame_ms=replay_buffer_loading_frame_ms,
         replay_buffer_loading_margin_px=replay_buffer_loading_margin_px,
@@ -793,8 +883,75 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
         focus_watchdog_ticks=focus_watchdog_ticks,
     )
 
-    _validate_hotkey_specs(settings)
     _validate_timing_sane(settings)
+    migrated_notes = [
+        n
+        for n in source_notes
+        if n.split("=")[0]
+        in (
+            "STATE_FILE",
+            "COMMANDS_ROOT",
+            "SCOREBOARD_BACKGROUND_IMAGE",
+            "REPLAY_SLATE_IMAGE",
+            "SLIDESHOW_DIR",
+            "REPLAY_VIDEO_PATH",
+            "REPLAY_UNAVAILABLE_IMAGE",
+            "REPLAY_ENABLED",
+            "SLIDESHOW_ENABLED",
+            "MPV_PATH",
+            "MPV_EXIT_HOTKEY",
+            "MPV_EMBEDDED",
+            "MPV_FULLSCREEN_ENABLED",
+            "MPV_LOOP_ENABLED",
+            "REPLAY_TRANSITION_TIMEOUT_MS",
+            "REPLAY_SLATE_STUCK_TIMEOUT_MS",
+            "REPLAY_FILE_MAX_AGE_SECONDS",
+            "REPLAY_BUFFER_LOADING_DIR",
+            "REPLAY_BUFFER_LOADING_FRAME_MS",
+            "REPLAY_BUFFER_LOADING_MARGIN_PX",
+            "ENCODER_STATUS_ENABLED",
+            "ENCODER_STATE_PATH",
+            "ENCODER_STATUS_POLL_MS",
+            "ENCODER_STATUS_STALE_SECONDS",
+            "ENCODER_STATUS_MARGIN_PX",
+            "SCOREBOARD_LAUNCHER_STATUS_ENABLED",
+            "SCOREBOARD_LAUNCHER_STATUS_PATH",
+            "OBS_STATUS_INDICATOR_ENABLED",
+            "OBS_STATUS_POLL_INTERVAL_MS",
+            "OBS_STATUS_REQUIRE_MAIN_OUTPUT_IDLE",
+            "OBS_WEBSOCKET_HOST",
+            "OBS_WEBSOCKET_PORT",
+            "OBS_WEBSOCKET_PASSWORD",
+        )
+    ]
+    if migrated_notes:
+        _LOG.info("scoreboard config source resolution: %s", ", ".join(migrated_notes))
+        fallback_notes = [n for n in migrated_notes if not n.endswith("=unified")]
+        if fallback_notes:
+            _LOG.warning("scoreboard config fallback in use: %s", ", ".join(fallback_notes))
+    if "COMMANDS_ROOT=unified" not in source_notes:
+        _LOG.warning(
+            "scoreboard command bus root using fallback source (prefer unified scoreboard.commandsRoot in config/settings.json)",
+        )
+    obs_ws_env_notes = [
+        n
+        for n in source_notes
+        if n
+        in (
+            "OBS_WEBSOCKET_HOST=env",
+            "OBS_WEBSOCKET_PORT=env",
+            "OBS_WEBSOCKET_PASSWORD=env",
+        )
+    ]
+    if obs_ws_env_notes:
+        _LOG.warning(
+            "scoreboard OBS websocket config using env source: %s (prefer unified scoreboard.obsWebsocketHost/obsWebsocketPort/obsWebsocketPassword)",
+            ", ".join(obs_ws_env_notes),
+        )
+    if "OBS_WEBSOCKET_PASSWORD=unified" in source_notes:
+        _LOG.warning(
+            "scoreboard OBS websocket password must remain env-only; unified source is intentionally unsupported",
+        )
     return settings
 
 
@@ -809,26 +966,6 @@ def _validate_timing_sane(settings: Settings) -> None:
         _LOG.error("replay_video_start_delay_ms must be non-negative")
 
 
-def _validate_hotkey_specs(settings: Settings) -> None:
-    for name, spec, fallback in (
-        ("RECORDING_START_HOTKEY", settings.recording_start_hotkey, "Ctrl+Shift+g"),
-        ("RECORDING_DISMISS_HOTKEY", settings.recording_dismiss_hotkey, "Ctrl+Alt+m"),
-        ("BLACK_SCREEN_HOTKEY", settings.black_screen_hotkey, "Ctrl+Shift+b"),
-        (
-            "REPLAY_BUFFER_LOADING_HOTKEY",
-            settings.replay_buffer_loading_hotkey,
-            "t",
-        ),
-    ):
-        if parse_recording_hotkey_to_tk_bind(spec) is None:
-            _LOG.warning(
-                "%s=%r is not a valid chord; binding will try %r",
-                name,
-                spec,
-                fallback,
-            )
-
-
 def summarize_settings(settings: Settings) -> str:
     """Human-readable summary for startup diagnostics (no secrets)."""
     lines = [
@@ -838,6 +975,7 @@ def summarize_settings(settings: Settings) -> str:
         f"slideshow_dir={settings.slideshow_dir!r}",
         f"replay_video_path={settings.replay_video_path!r}",
         f"replay_unavailable_image={settings.replay_unavailable_image!r}",
+        f"commands_root={settings.commands_root!r}",
         f"mpv_path={settings.mpv_path!r}",
         f"mpv_embedded={settings.mpv_embedded}",
         f"mpv_hwdec_enabled={settings.mpv_hwdec_enabled}",
@@ -868,10 +1006,6 @@ def summarize_settings(settings: Settings) -> str:
         f"recording_ended_graphic_hold_ms={settings.recording_ended_graphic_hold_ms}",
         f"recording_overlay_timer_offset_x_px={settings.recording_overlay_timer_offset_x_px}",
         f"recording_overlay_timer_offset_y_px={settings.recording_overlay_timer_offset_y_px}",
-        f"recording_start_hotkey={settings.recording_start_hotkey!r}",
-        f"recording_dismiss_hotkey={settings.recording_dismiss_hotkey!r}",
-        f"black_screen_hotkey={settings.black_screen_hotkey!r}",
-        f"replay_buffer_loading_hotkey={settings.replay_buffer_loading_hotkey!r}",
         f"replay_buffer_loading_dir={settings.replay_buffer_loading_dir!r}",
         f"replay_buffer_loading_frame_ms={settings.replay_buffer_loading_frame_ms}",
         f"replay_buffer_loading_margin_px={settings.replay_buffer_loading_margin_px}",

@@ -63,7 +63,7 @@ def operator_foreground_ok(
 ) -> tuple[bool, int | None, str, int | None]:
     """
     Whether the Windows foreground window is the scoreboard root or (when recording UI is
-    active) the recording Toplevel — i.e. operator hotkeys are expected to route correctly.
+    active) the recording Toplevel — i.e. operator input is expected to route correctly.
     """
     fg = foreground_hwnd()
     title = window_title(fg)

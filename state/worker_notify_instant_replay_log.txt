@@ -1,0 +1,2 @@
+2026-04-22 01:37:03.009  compat_wrapper=forward mode=http host=127.0.0.1 port=1
+2026-04-22 01:37:07.116  compat_wrapper=canonical_exit code=1

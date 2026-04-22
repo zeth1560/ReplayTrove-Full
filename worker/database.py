@@ -5,6 +5,7 @@ Supabase (PostgREST) insert/update helpers for clip rows.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 from supabase import Client, create_client
@@ -46,7 +47,10 @@ def _clip_row(
         "published": settings.published,
     }
     if duration_seconds is not None:
-        row["duration_seconds"] = duration_seconds
+        ds = float(duration_seconds)
+        if math.isfinite(ds):
+            # Supabase clips.duration_seconds is integer; ffprobe yields floats.
+            row["duration_seconds"] = int(round(ds))
     col = settings.supabase_clip_worker_identity_column.strip()
     if col and worker_job_identity:
         row[col] = worker_job_identity
