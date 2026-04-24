@@ -1,14 +1,10 @@
+#Requires -Version 5.1
 param(
     [Parameter(Mandatory = $true)]
     [string]$Json
 )
 
-$pipe = New-Object System.IO.Pipes.NamedPipeClientStream(".", "mpv", [System.IO.Pipes.PipeDirection]::Out)
-$pipe.Connect(2000)
+$ErrorActionPreference = 'Stop'
+. "$PSScriptRoot\mpv_ipc_core.ps1"
 
-$writer = New-Object System.IO.StreamWriter($pipe)
-$writer.AutoFlush = $true
-$writer.WriteLine($Json)
-
-$writer.Dispose()
-$pipe.Dispose()
+Invoke-MpvIpcCommandBatch @($Json)

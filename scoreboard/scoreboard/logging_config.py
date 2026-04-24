@@ -41,7 +41,7 @@ def configure_logging(
 
         if central_logs_root is not None:
             try:
-                daily = DailyJsonlFileHandler(Path(central_logs_root), "scoreboard")
+                daily = ServiceJsonlFileHandler(Path(central_logs_root), "scoreboard")
                 daily.setFormatter(_ScoreboardJsonlFormatter())
                 daily.setLevel(logging.DEBUG)
                 root.addHandler(daily)

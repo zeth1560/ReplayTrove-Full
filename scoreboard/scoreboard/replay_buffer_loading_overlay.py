@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import tkinter as tk
 from pathlib import Path
+from typing import Callable
 
 from PIL import Image, ImageTk
 
@@ -33,6 +34,7 @@ class ReplayBufferLoadingOverlay:
         overlay_item_id: int,
         screen_width: int,
         screen_height: int,
+        on_sequence_finished: Callable[[], None] | None = None,
     ) -> None:
         self._root = root
         self._settings = settings
@@ -41,6 +43,7 @@ class ReplayBufferLoadingOverlay:
         self._overlay_item_id = overlay_item_id
         self._screen_w = screen_width
         self._screen_h = screen_height
+        self._on_sequence_finished = on_sequence_finished
 
         self._hold_job: str | None = None
         self._hint_win: tk.Toplevel | None = None
@@ -50,6 +53,9 @@ class ReplayBufferLoadingOverlay:
         self._item_a: int | None = None
         self._item_b: int | None = None
         self._sequence_active = False
+
+    def is_sequence_active(self) -> bool:
+        return self._sequence_active
 
     def sync_canvas_stack(self) -> None:
         """Call after raising the transparent overlay so this strip stays visible on top."""
@@ -269,6 +275,11 @@ class ReplayBufferLoadingOverlay:
         self._cancel_hold()
         self._destroy_canvas_items()
         self._photos.clear()
+        if self._on_sequence_finished is not None:
+            try:
+                self._on_sequence_finished()
+            except Exception:
+                _LOG.exception("Replay buffer loading: on_sequence_finished callback failed")
 
 
 def _path_to_rgb_photo(path: str) -> ImageTk.PhotoImage | None:

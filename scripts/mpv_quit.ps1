@@ -1,9 +1,10 @@
-$pipe = New-Object System.IO.Pipes.NamedPipeClientStream(".", "mpv", [System.IO.Pipes.PipeDirection]::Out)
-$pipe.Connect(2000)
+#Requires -Version 5.1
+$ErrorActionPreference = 'Stop'
+. "$PSScriptRoot\mpv_ipc_core.ps1"
 
-$writer = New-Object System.IO.StreamWriter($pipe)
-$writer.AutoFlush = $true
-$writer.WriteLine('{"command": ["quit"]}')
-
-$writer.Dispose()
-$pipe.Dispose()
+# Short connect timeout: this runs before every replay launch when no mpv is listening;
+# waiting the ipc_core default (8s) makes the scoreboard feel frozen.
+Invoke-MpvIpcPipeline -ConnectTimeoutMs 800 -ReadTimeoutMs 2000 {
+    param($send)
+    & $send @{ command = @('quit') }
+}

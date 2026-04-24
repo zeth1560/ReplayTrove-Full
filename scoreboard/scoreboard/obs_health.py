@@ -83,8 +83,8 @@ def _obs_websocket_recording_gate_result(
     return (True, "")
 
 
-def probe_obs_video_recorder_ready(settings: Settings) -> bool:
-    """True if OBS WebSocket is reachable and the same rules as the recording gate pass."""
+def probe_obs_video_recorder_ready_with_reason(settings: Settings) -> tuple[bool, str]:
+    """Same as ``probe_obs_video_recorder_ready`` but returns a short operator-facing reason if false."""
     require_idle = settings.obs_status_require_main_output_idle
     original_block = settings.recording_obs_block_if_main_recording
     effective_settings = settings
@@ -96,10 +96,15 @@ def probe_obs_video_recorder_ready(settings: Settings) -> bool:
                 "recording_obs_block_if_main_recording": False,
             }
         )
-    ok, _reason = _obs_websocket_recording_gate_result(
+    return _obs_websocket_recording_gate_result(
         effective_settings,
         log_connection_failures=False,
     )
+
+
+def probe_obs_video_recorder_ready(settings: Settings) -> bool:
+    """True if OBS WebSocket is reachable and the same rules as the recording gate pass."""
+    ok, _reason = probe_obs_video_recorder_ready_with_reason(settings)
     return ok
 
 

@@ -1,9 +1,3 @@
-$pipe = New-Object System.IO.Pipes.NamedPipeClientStream(".", "mpv", [System.IO.Pipes.PipeDirection]::Out)
-$pipe.Connect(2000)
-
-$writer = New-Object System.IO.StreamWriter($pipe)
-$writer.AutoFlush = $true
-$writer.WriteLine('{"command": ["seek", 5]}')
-
-$writer.Dispose()
-$pipe.Dispose()
+#Requires -Version 5.1
+$ErrorActionPreference = 'Stop'
+& (Join-Path $PSScriptRoot 'mpv_scoreboard_delegate.ps1') -Action mpv_seek_forward_5

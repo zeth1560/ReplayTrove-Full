@@ -17,8 +17,10 @@ class ScoreboardUnifiedSnapshot:
     migrated: bool
     scoreboard_section_loaded: bool
     obsffmpeg_section_loaded: bool
+    worker_section_loaded: bool
     scoreboard: dict[str, Any]
     obsffmpeg: dict[str, Any]
+    worker: dict[str, Any]
     error: str | None = None
 
 
@@ -38,8 +40,10 @@ def load_scoreboard_unified_snapshot() -> ScoreboardUnifiedSnapshot:
             migrated=False,
             scoreboard_section_loaded=False,
             obsffmpeg_section_loaded=False,
+            worker_section_loaded=False,
             scoreboard={},
             obsffmpeg={},
+            worker={},
         )
 
     try:
@@ -54,8 +58,10 @@ def load_scoreboard_unified_snapshot() -> ScoreboardUnifiedSnapshot:
             migrated=False,
             scoreboard_section_loaded=False,
             obsffmpeg_section_loaded=False,
+            worker_section_loaded=False,
             scoreboard={},
             obsffmpeg={},
+            worker={},
             error=str(exc),
         )
 
@@ -67,6 +73,7 @@ def load_scoreboard_unified_snapshot() -> ScoreboardUnifiedSnapshot:
         if isinstance(data.get("obsFfmpegPaths"), dict)
         else {}
     )
+    worker = data.get("worker") if isinstance(data.get("worker"), dict) else {}
     schema_version = data.get("schemaVersion")
     if isinstance(schema_version, bool):
         schema_version = None
@@ -80,6 +87,8 @@ def load_scoreboard_unified_snapshot() -> ScoreboardUnifiedSnapshot:
         migrated=False,
         scoreboard_section_loaded=bool(scoreboard),
         obsffmpeg_section_loaded=bool(obsffmpeg),
+        worker_section_loaded=bool(worker),
         scoreboard=scoreboard,
         obsffmpeg=obsffmpeg,
+        worker=worker,
     )

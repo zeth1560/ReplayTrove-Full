@@ -37,18 +37,82 @@ function Invoke-ReplayTroveObsSaveReplayBuffer {
         return [Convert]::ToBase64String($authHash)
     }
 
+    function Receive-ObsWebSocketText {
+        param(
+            [Parameter(Mandatory = $true)]
+            [System.Net.WebSockets.ClientWebSocket]$Socket,
+            [int]$TimeoutMs = 8000
+        )
+        $buffer = New-Object byte[] 65536
+        $segment = [ArraySegment[byte]]::new($buffer)
+        $acc = New-Object System.Text.StringBuilder
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($true) {
+            $remaining = [Math]::Max(1, $TimeoutMs - [int]$sw.ElapsedMilliseconds)
+            $cts = [System.Threading.CancellationTokenSource]::new($remaining)
+            try {
+                $result = $Socket.ReceiveAsync($segment, $cts.Token).GetAwaiter().GetResult()
+            } catch [System.OperationCanceledException] {
+                throw "OBS websocket receive timeout after ${TimeoutMs}ms"
+            } finally {
+                $cts.Dispose()
+            }
+            if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
+                throw "OBS websocket closed by peer while awaiting response"
+            }
+            if ($result.Count -gt 0) {
+                [void]$acc.Append([System.Text.Encoding]::UTF8.GetString($buffer, 0, $result.Count))
+            }
+            if ($result.EndOfMessage) {
+                return $acc.ToString()
+            }
+            if ($sw.ElapsedMilliseconds -ge $TimeoutMs) {
+                throw "OBS websocket fragmented response timeout after ${TimeoutMs}ms"
+            }
+        }
+    }
+
+    function Send-ObsWebSocketText {
+        param(
+            [Parameter(Mandatory = $true)]
+            [System.Net.WebSockets.ClientWebSocket]$Socket,
+            [Parameter(Mandatory = $true)]
+            [string]$Payload,
+            [int]$TimeoutMs = 8000
+        )
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Payload)
+        $seg = [ArraySegment[byte]]::new($bytes)
+        $cts = [System.Threading.CancellationTokenSource]::new($TimeoutMs)
+        try {
+            $Socket.SendAsync(
+                $seg,
+                [System.Net.WebSockets.WebSocketMessageType]::Text,
+                $true,
+                $cts.Token
+            ).GetAwaiter().GetResult()
+        } catch [System.OperationCanceledException] {
+            throw "OBS websocket send timeout after ${TimeoutMs}ms"
+        } finally {
+            $cts.Dispose()
+        }
+    }
+
     $ws = $null
     try {
         Write-ObsSaveLog "Starting OBS save replay request (in-process)"
         $ws = [System.Net.WebSockets.ClientWebSocket]::new()
         $uri = [Uri]("ws://{0}:{1}" -f $ObsHost, $Port)
-        $ws.ConnectAsync($uri, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        $connectCts = [System.Threading.CancellationTokenSource]::new(5000)
+        try {
+            $ws.ConnectAsync($uri, $connectCts.Token).GetAwaiter().GetResult()
+        } catch [System.OperationCanceledException] {
+            throw "OBS websocket connect timeout after 5000ms"
+        } finally {
+            $connectCts.Dispose()
+        }
         Write-ObsSaveLog "Connected to OBS websocket"
 
-        $buffer = New-Object byte[] 65536
-        $segment = [ArraySegment[byte]]::new($buffer)
-        $result = $ws.ReceiveAsync($segment, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
-        $helloJson = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $result.Count)
+        $helloJson = Receive-ObsWebSocketText -Socket $ws -TimeoutMs 8000
         Write-ObsSaveLog "Hello: $helloJson"
         $hello = $helloJson | ConvertFrom-Json
 
@@ -70,18 +134,10 @@ function Invoke-ReplayTroveObsSaveReplayBuffer {
         }
 
         $identifyJson = $identify | ConvertTo-Json -Compress
-        $identifyBytes = [System.Text.Encoding]::UTF8.GetBytes($identifyJson)
-        $identifySegment = [ArraySegment[byte]]::new($identifyBytes)
-        $ws.SendAsync(
-            $identifySegment,
-            [System.Net.WebSockets.WebSocketMessageType]::Text,
-            $true,
-            [Threading.CancellationToken]::None
-        ).GetAwaiter().GetResult()
+        Send-ObsWebSocketText -Socket $ws -Payload $identifyJson -TimeoutMs 8000
         Write-ObsSaveLog "Identify sent"
 
-        $result = $ws.ReceiveAsync($segment, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
-        $identifiedJson = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $result.Count)
+        $identifiedJson = Receive-ObsWebSocketText -Socket $ws -TimeoutMs 8000
         Write-ObsSaveLog "Identify response: $identifiedJson"
         $identified = $identifiedJson | ConvertFrom-Json
         if ($identified.op -ne 2) {
@@ -95,18 +151,10 @@ function Invoke-ReplayTroveObsSaveReplayBuffer {
                 requestId   = "save-replay-buffer"
             }
         } | ConvertTo-Json -Compress
-        $requestBytes = [System.Text.Encoding]::UTF8.GetBytes($request)
-        $requestSegment = [ArraySegment[byte]]::new($requestBytes)
-        $ws.SendAsync(
-            $requestSegment,
-            [System.Net.WebSockets.WebSocketMessageType]::Text,
-            $true,
-            [Threading.CancellationToken]::None
-        ).GetAwaiter().GetResult()
+        Send-ObsWebSocketText -Socket $ws -Payload $request -TimeoutMs 8000
         Write-ObsSaveLog "SaveReplayBuffer request sent"
 
-        $result = $ws.ReceiveAsync($segment, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
-        $responseJson = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $result.Count)
+        $responseJson = Receive-ObsWebSocketText -Socket $ws -TimeoutMs 8000
         Write-ObsSaveLog "SaveReplayBuffer response: $responseJson"
         $response = $responseJson | ConvertFrom-Json
         if ($response.op -ne 7 -or -not $response.d.requestStatus.result) {

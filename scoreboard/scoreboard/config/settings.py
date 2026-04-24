@@ -9,10 +9,41 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
-from scoreboard.config.unified_adapter import load_scoreboard_unified_snapshot
+from scoreboard.config.unified_adapter import (
+    ScoreboardUnifiedSnapshot,
+    load_scoreboard_unified_snapshot,
+)
 
 
 _LOG = logging.getLogger(__name__)
+
+
+def worker_http_health_endpoint(unified: ScoreboardUnifiedSnapshot) -> tuple[str, int | None]:
+    """Host/port for worker ``GET /health`` (replay-trigger-http). ``port`` is None when HTTP trigger is off."""
+    w = unified.worker
+    host = "127.0.0.1"
+    port: int | None = None
+    if w:
+        hc = w.get("httpReplayTriggerHost")
+        if isinstance(hc, str) and hc.strip():
+            host = hc.strip()
+        en = w.get("httpReplayTriggerEnabled")
+        pc = w.get("httpReplayTriggerPort")
+        if en is False:
+            port = None
+        elif isinstance(pc, int) and not isinstance(pc, bool) and pc >= 1:
+            port = pc
+    eh = os.environ.get("REPLAY_TRIGGER_HTTP_HOST")
+    if eh and str(eh).strip():
+        host = str(eh).strip()
+    ep = os.environ.get("REPLAY_TRIGGER_HTTP_PORT")
+    if ep is not None and str(ep).strip() != "":
+        try:
+            pv = int(str(ep).strip())
+            port = pv if pv >= 1 else None
+        except ValueError:
+            pass
+    return host, port
 
 # Defaults (formerly module-level constants in main.py)
 DEFAULT_STATE_FILE = "state.json"
@@ -40,9 +71,13 @@ SLIDESHOW_FADE_STEPS = 10
 SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
 
 # Hold IR slate on screen this long after fade-in before launching mpv (extra time for clip to finish writing).
-REPLAY_VIDEO_START_DELAY_MS = 5000
+# After slate is visible, wait this long before launching mpv (OBS/disk flush). Overridable
+# via REPLAY_VIDEO_START_DELAY_MS; was 5000ms and made replay feel frozen with prep mpv_quit.
+REPLAY_VIDEO_START_DELAY_MS = 1000
 REPLAY_VIDEO_POLL_MS = 500
 REPLAY_RETURN_SLATE_HOLD_MS = 350
+# Command-bus folder poll (Stream Deck / send_command.ps1). Lower = snappier mpv controls; min 10 ms.
+COMMAND_POLL_INTERVAL_MS_DEFAULT = 25
 # If fade or handoff hangs, force recovery (ms)
 REPLAY_TRANSITION_TIMEOUT_MS = 90_000
 # After slate is shown, if video never becomes active this long after launch delay, recover (ms)
@@ -281,6 +316,18 @@ class Settings:
     # JSON for external launcher (screensaver_active, scoreboard_running).
     launcher_status_enabled: bool = True
     launcher_status_json_path: str = DEFAULT_LAUNCHER_STATUS_JSON_PATH
+    # Optional Companion page switching webhooks fired by scoreboard replay state transitions.
+    companion_page_switch_enabled: bool = False
+    companion_replay_active_page_url: str = ""
+    companion_replay_locked_page_url: str = ""
+    companion_replay_idle_page_url: str = ""
+    # When false, Companion idle/locked readiness ignores OBS WebSocket (mpv + replay file + worker health still apply).
+    companion_readiness_require_obs_websocket: bool = True
+    # How often the scoreboard scans ``commands/.../pending`` (see SCOREBOARD_COMMAND_POLL_MS).
+    command_poll_interval_ms: int = COMMAND_POLL_INTERVAL_MS_DEFAULT
+    # Instant-replay readiness: optional GET http://host:port/health (worker replay-trigger-http).
+    worker_http_health_host: str = "127.0.0.1"
+    worker_http_health_port: int | None = None
 
 
 def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
@@ -293,14 +340,18 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
         _LOG.info("No %s file; using process environment and defaults", env_file)
 
     unified = load_scoreboard_unified_snapshot()
+    worker_http_health_host, worker_http_health_port = worker_http_health_endpoint(unified)
     _LOG.info(
-        "scoreboard unified config: found=%s path=%s schema_version=%s migrated=%s scoreboard_section=%s obsffmpeg_section=%s",
+        "scoreboard unified config: found=%s path=%s schema_version=%s migrated=%s scoreboard_section=%s obsffmpeg_section=%s worker_section=%s worker_http_health=%s:%s",
         unified.found,
         str(unified.path),
         unified.schema_version,
         unified.migrated,
         unified.scoreboard_section_loaded,
         unified.obsffmpeg_section_loaded,
+        unified.worker_section_loaded,
+        worker_http_health_host,
+        worker_http_health_port if worker_http_health_port is not None else "off",
     )
     if unified.error:
         _LOG.warning("scoreboard unified config parse failed: %s", unified.error)
@@ -348,6 +399,12 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
     _set_u_int(
         "REPLAY_FILE_MAX_AGE_SECONDS", unified.scoreboard.get("replayFileMaxAgeSeconds")
     )
+    _set_u_int(
+        "REPLAY_VIDEO_START_DELAY_MS", unified.scoreboard.get("replayVideoStartDelayMs")
+    )
+    _set_u_int(
+        "SCOREBOARD_COMMAND_POLL_MS", unified.scoreboard.get("commandPollIntervalMs")
+    )
     _set_u_str(
         "REPLAY_BUFFER_LOADING_DIR", unified.scoreboard.get("replayBufferLoadingDir")
     )
@@ -385,6 +442,26 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
     _set_u_bool(
         "OBS_STATUS_REQUIRE_MAIN_OUTPUT_IDLE",
         unified.scoreboard.get("obsStatusRequireMainOutputIdle"),
+    )
+    _set_u_bool(
+        "COMPANION_PAGE_SWITCH_ENABLED",
+        unified.scoreboard.get("companionPageSwitchEnabled"),
+    )
+    _set_u_str(
+        "COMPANION_REPLAY_ACTIVE_PAGE_URL",
+        unified.scoreboard.get("companionReplayActivePageUrl"),
+    )
+    _set_u_str(
+        "COMPANION_REPLAY_LOCKED_PAGE_URL",
+        unified.scoreboard.get("companionReplayLockedPageUrl"),
+    )
+    _set_u_str(
+        "COMPANION_REPLAY_IDLE_PAGE_URL",
+        unified.scoreboard.get("companionReplayIdlePageUrl"),
+    )
+    _set_u_bool(
+        "COMPANION_READINESS_REQUIRE_OBS_WEBSOCKET",
+        unified.scoreboard.get("companionReadinessRequireObsWebsocket"),
     )
     _set_u_str("MPV_PATH", unified.obsffmpeg.get("mpvPath"))
 
@@ -670,6 +747,38 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
         launcher_status_json_path = str((_repo_root / _lsp).resolve())
     else:
         launcher_status_json_path = str(_lsp)
+    companion_page_switch_enabled = _env_truthy(
+        g("COMPANION_PAGE_SWITCH_ENABLED"),
+        False,
+    )
+    companion_replay_active_page_url = (
+        g("COMPANION_REPLAY_ACTIVE_PAGE_URL", "") or ""
+    ).strip()
+    companion_replay_locked_page_url = (
+        g("COMPANION_REPLAY_LOCKED_PAGE_URL", "") or ""
+    ).strip()
+    companion_replay_idle_page_url = (
+        g("COMPANION_REPLAY_IDLE_PAGE_URL", "") or ""
+    ).strip()
+    companion_readiness_require_obs_websocket = _env_truthy(
+        g("COMPANION_READINESS_REQUIRE_OBS_WEBSOCKET"),
+        True,
+    )
+    command_poll_interval_ms = _parse_positive_int(
+        g(
+            "SCOREBOARD_COMMAND_POLL_MS",
+            str(COMMAND_POLL_INTERVAL_MS_DEFAULT),
+        ),
+        COMMAND_POLL_INTERVAL_MS_DEFAULT,
+        "SCOREBOARD_COMMAND_POLL_MS",
+        minimum=10,
+    )
+    if command_poll_interval_ms > 500:
+        _LOG.warning(
+            "SCOREBOARD_COMMAND_POLL_MS=%s above 500; capping to 500",
+            command_poll_interval_ms,
+        )
+        command_poll_interval_ms = 500
 
     replay_enabled = _env_truthy(g("REPLAY_ENABLED"), True)
     slideshow_enabled = _env_truthy(g("SLIDESHOW_ENABLED"), True)
@@ -702,6 +811,15 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
         ),
         DEFAULT_REPLAY_FILE_MAX_AGE_SECONDS,
         "REPLAY_FILE_MAX_AGE_SECONDS",
+        minimum=0,
+    )
+    replay_video_start_delay_ms = _parse_positive_int(
+        g(
+            "REPLAY_VIDEO_START_DELAY_MS",
+            str(REPLAY_VIDEO_START_DELAY_MS),
+        ),
+        REPLAY_VIDEO_START_DELAY_MS,
+        "REPLAY_VIDEO_START_DELAY_MS",
         minimum=0,
     )
     replay_obs_broadcast_on_unavailable = _env_truthy(
@@ -857,6 +975,14 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
         recording_encoder_poll_ms=recording_encoder_poll_ms,
         launcher_status_enabled=launcher_status_enabled,
         launcher_status_json_path=launcher_status_json_path,
+        companion_page_switch_enabled=companion_page_switch_enabled,
+        companion_replay_active_page_url=companion_replay_active_page_url,
+        companion_replay_locked_page_url=companion_replay_locked_page_url,
+        companion_replay_idle_page_url=companion_replay_idle_page_url,
+        companion_readiness_require_obs_websocket=companion_readiness_require_obs_websocket,
+        command_poll_interval_ms=command_poll_interval_ms,
+        worker_http_health_host=worker_http_health_host,
+        worker_http_health_port=worker_http_health_port,
         recording_session_end_info_ms=recording_session_end_info_ms,
         recording_session_end_message=recording_session_end_message,
         recording_overlay_width=recording_overlay_width,
@@ -879,6 +1005,7 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
         replay_transition_timeout_ms=transition_timeout,
         replay_slate_stuck_timeout_ms=slate_stuck_timeout,
         replay_file_max_age_seconds=replay_file_max_age_seconds,
+        replay_video_start_delay_ms=replay_video_start_delay_ms,
         replay_obs_broadcast_on_unavailable=replay_obs_broadcast_on_unavailable,
         replay_launcher_restart_obs_on_unavailable=replay_launcher_restart_obs_on_unavailable,
         replay_launcher_restart_obs_script=replay_launcher_restart_obs_script,
@@ -924,6 +1051,7 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
             "REPLAY_TRANSITION_TIMEOUT_MS",
             "REPLAY_SLATE_STUCK_TIMEOUT_MS",
             "REPLAY_FILE_MAX_AGE_SECONDS",
+            "REPLAY_VIDEO_START_DELAY_MS",
             "REPLAY_BUFFER_LOADING_DIR",
             "REPLAY_BUFFER_LOADING_FRAME_MS",
             "REPLAY_BUFFER_LOADING_MARGIN_PX",
@@ -937,6 +1065,12 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
             "OBS_STATUS_INDICATOR_ENABLED",
             "OBS_STATUS_POLL_INTERVAL_MS",
             "OBS_STATUS_REQUIRE_MAIN_OUTPUT_IDLE",
+            "COMPANION_PAGE_SWITCH_ENABLED",
+            "COMPANION_REPLAY_ACTIVE_PAGE_URL",
+            "COMPANION_REPLAY_LOCKED_PAGE_URL",
+            "COMPANION_REPLAY_IDLE_PAGE_URL",
+            "COMPANION_READINESS_REQUIRE_OBS_WEBSOCKET",
+            "SCOREBOARD_COMMAND_POLL_MS",
             "OBS_WEBSOCKET_HOST",
             "OBS_WEBSOCKET_PORT",
             "OBS_WEBSOCKET_PASSWORD",
@@ -1038,6 +1172,14 @@ def summarize_settings(settings: Settings) -> str:
         f"recording_encoder_poll_ms={settings.recording_encoder_poll_ms}",
         f"launcher_status_enabled={settings.launcher_status_enabled}",
         f"launcher_status_json_path={settings.launcher_status_json_path!r}",
+        f"companion_page_switch_enabled={settings.companion_page_switch_enabled}",
+        f"companion_replay_active_page_url={settings.companion_replay_active_page_url!r}",
+        f"companion_replay_locked_page_url={settings.companion_replay_locked_page_url!r}",
+        f"companion_replay_idle_page_url={settings.companion_replay_idle_page_url!r}",
+        f"companion_readiness_require_obs_websocket={settings.companion_readiness_require_obs_websocket}",
+        f"command_poll_interval_ms={settings.command_poll_interval_ms}",
+        f"worker_http_health_host={settings.worker_http_health_host!r}",
+        f"worker_http_health_port={settings.worker_http_health_port}",
         f"idle_timeout_ms={settings.idle_timeout_ms}",
         f"slideshow_interval_ms={settings.slideshow_interval_ms}",
         f"replay_enabled={settings.replay_enabled}",
@@ -1049,6 +1191,7 @@ def summarize_settings(settings: Settings) -> str:
         f"replay_transition_timeout_ms={settings.replay_transition_timeout_ms}",
         f"replay_slate_stuck_timeout_ms={settings.replay_slate_stuck_timeout_ms}",
         f"replay_file_max_age_seconds={settings.replay_file_max_age_seconds}",
+        f"replay_video_start_delay_ms={settings.replay_video_start_delay_ms}",
         f"replay_obs_broadcast_on_unavailable={settings.replay_obs_broadcast_on_unavailable}",
         f"replay_launcher_restart_obs_on_unavailable={settings.replay_launcher_restart_obs_on_unavailable}",
         f"replay_launcher_restart_obs_script={settings.replay_launcher_restart_obs_script!r}",

@@ -2268,11 +2268,39 @@ def process_clip(
                     context="processed",
                 )
 
+                resolved_processed_path = moved_ok
+                if resolved_processed_path is None and dest.is_file():
+                    # Another worker/process may have completed the move before our final check.
+                    resolved_processed_path = dest
+                if resolved_processed_path is None:
+                    logger.error(
+                        "Finalize failed: source move did not complete and processed file is missing",
+                        extra={
+                            "structured": {
+                                "source": str(clip_path),
+                                "expected_processed": str(dest),
+                                "slug": slug,
+                                "recorded_at": captured_at_utc,
+                                "idempotency_key": idem,
+                            }
+                        },
+                    )
+                    job_store.update_job(
+                        idem,
+                        status="failed",
+                        last_error="finalize_move_missing",
+                        failure_category="local_io",
+                        failure_reason_code="finalize_move_missing",
+                    )
+                    if clip_lifecycle is not None:
+                        clip_lifecycle["outcome"] = "failed"
+                    return
+
                 logger.info(
                     "Clip processed successfully",
                     extra={
                         "structured": {
-                            "original": str(moved_ok or dest),
+                            "original": str(resolved_processed_path),
                             "preview": str(preview_path),
                             "slug": slug,
                             "recorded_at": captured_at_utc,
@@ -2287,7 +2315,7 @@ def process_clip(
                     merge_steps=True,
                     step_flags=STEP_FINALIZED,
                     status="completed",
-                    processing_path=normalize_storage_path(moved_ok or dest),
+                    processing_path=normalize_storage_path(resolved_processed_path),
                     last_step_completed_at=time.time(),
                     current_stage=None,
                 )
@@ -2303,7 +2331,7 @@ def process_clip(
                         "job_uuid": job.job_uuid if job else None,
                         "clip_identity": idem,
                         "status": "completed",
-                        "processed_path": str(moved_ok or dest),
+                        "processed_path": str(resolved_processed_path),
                     },
                 )
             else:

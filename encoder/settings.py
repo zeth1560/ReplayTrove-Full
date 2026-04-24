@@ -238,7 +238,7 @@ def load_encoder_settings() -> EncoderSettings:
         audio_bitrate_k=_opt_int("AUDIO_BITRATE_K", 192, 32),
         long_clips_folder=Path(_opt("LONG_CLIPS_FOLDER", r"C:\ReplayTrove\long_clips")),
         long_clips_trigger=Path(trig_lc) if trig_lc else None,
-        encoder_logs_root=encoder_logs_root,
+        encoder_logs_root=log_dir,
         long_record_min_bytes=_opt_int("LONG_RECORD_MIN_BYTES", 256 * 1024, 1024),
         long_record_verify_stable_seconds=_opt_float(
             "LONG_RECORD_VERIFY_STABLE_SECONDS", 3.0, 0.5

@@ -45,9 +45,14 @@ $script:WorkerCanonicalTrustCategory = "legacy_noncanonical"
 $script:WorkerCanonicalTrustReason = "worker_not_contacted"
 
 function Write-ReplayLog([string] $Message) {
-    Write-ReplayTroveJsonl -Component 'scripts' -ScriptName 'save_replay_and_trigger.ps1' -Event 'replay_pipeline' -Level 'INFO' -Message $Message -Data @{
-        correlation_id = $cid
-        detail         = $Message
+    try {
+        Write-ReplayTroveJsonl -Component 'scripts' -ScriptName 'save_replay_and_trigger.ps1' -Event 'replay_pipeline' -Level 'INFO' -Message $Message -Data @{
+            correlation_id = $cid
+            detail         = $Message
+        }
+    }
+    catch {
+        # Never fail replay pipeline due to telemetry/log stream issues.
     }
 }
 
@@ -311,7 +316,7 @@ try {
         -UnifiedData $unifiedSnapshot.Data `
         -UnifiedPath "worker.httpReplayTriggerTimeoutSec" `
         -EnvName "REPLAY_TRIGGER_HTTP_TIMEOUT_SEC" `
-        -DefaultValue 45 `
+        -DefaultValue 90 `
         -MinimumValue 1
     $WorkerReplayHost = [string]$resolvedWorkerHost.Value
     $WorkerReplayPort = [int]$resolvedWorkerPort.Value

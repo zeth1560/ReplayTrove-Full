@@ -16,6 +16,7 @@ from dataclasses import asdict
 from hmac import compare_digest
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -25,9 +26,10 @@ CANONICAL_TRIGGER_SOURCE = "save_replay_and_trigger.ps1"
 CANONICAL_TOKEN_HEADER = "X-Replay-Canonical-Token"
 
 
-class ReplayTriggerHTTPServer(HTTPServer):
-    """HTTPServer with a shared busy lock for one replay at a time."""
+class ReplayTriggerHTTPServer(ThreadingMixIn, HTTPServer):
+    """Threaded server so ``/health`` answers while a long ``/replay`` holds a worker thread."""
 
+    daemon_threads = True
     busy_lock: threading.Lock
 
     def __init__(
@@ -289,13 +291,24 @@ def _make_handler_class(
             filename_prefix: str,
             tolerance_seconds: float,
         ) -> None:
-            if not self.server.busy_lock.acquire(blocking=False):
+            # Previously we failed immediately while another replay held the lock, so OBS had
+            # already saved and save_replay_and_trigger.ps1 never reached replay_on. Wait a
+            # bounded time (fraction of the caller's pipeline timeout) so back-to-back
+            # instant replays queue instead of losing the scoreboard transition.
+            try:
+                ts = float(timeout_seconds)
+            except (TypeError, ValueError):
+                ts = 120.0
+            lock_wait = max(5.0, min(45.0, ts * 0.40))
+            if not self.server.busy_lock.acquire(blocking=True, timeout=lock_wait):
                 logger.warning(
-                    "replay-trigger-http: busy; rejecting request",
+                    "replay-trigger-http: busy; timed out waiting for lock (lock_wait_sec=%s)",
+                    lock_wait,
                     extra={
                         "structured": {
                             "request_id": request_id,
                             "correlation_id": correlation_id,
+                            "lock_wait_sec": lock_wait,
                         }
                     },
                 )

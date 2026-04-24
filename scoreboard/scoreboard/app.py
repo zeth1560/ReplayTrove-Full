@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import threading
 import time
 import tkinter as tk
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -17,12 +20,19 @@ from PIL import Image, ImageTk
 
 from scoreboard.config.settings import DEFAULT_COMMANDS_ROOT, Settings, load_settings
 from scoreboard.config.unified_adapter import load_scoreboard_unified_snapshot
-from scoreboard.obs_health import check_obs_recording_gate, probe_obs_video_recorder_ready
+from scoreboard.obs_health import (
+    check_obs_recording_gate,
+    probe_obs_video_recorder_ready,
+    probe_obs_video_recorder_ready_with_reason,
+)
 from scoreboard.encoder_status_overlay import EncoderStatusOverlay
 from scoreboard.persistence.score_store import load_scores, save_scores
+from scoreboard.startup_validation import resolve_mpv_executable
+from scoreboard.worker_health import probe_worker_replay_trigger_http
 from scoreboard.platform.win32 import win32_force_foreground, win32_synthetic_click_window_center
 from scoreboard.encoder_recording_sync import load_encoder_recording_snapshot
 from scoreboard.launcher_status import utc_now_iso, write_launcher_status_json
+from scoreboard.mpv_ipc import try_run_mpv_action
 from scoreboard.recording_overlay import RecordingOverlay, RecordingOverlayState
 from scoreboard.replay_buffer_loading_overlay import ReplayBufferLoadingOverlay
 from scoreboard.replay_controller import ReplayController
@@ -31,6 +41,43 @@ from scoreboard.screensaver import Screensaver
 from scoreboard.ui_focus_diag import operator_foreground_ok, root_wm_snapshot
 
 _LOG = logging.getLogger(__name__)
+
+# mpv JSON IPC (``\\.\pipe\mpv``) — handled in-process via ``scoreboard.mpv_ipc`` (not PowerShell).
+_MPV_COMMAND_BUS_SCRIPTS = frozenset(
+    {
+        "mpv_pause",
+        "mpv_seek_back_5",
+        "mpv_seek_forward_5",
+        "mpv_speed_up",
+        "mpv_speed_down",
+        "mpv_speed_reset",
+        "mpv_zoom_in",
+        "mpv_zoom_out",
+        "mpv_pan_up",
+        "mpv_pan_down",
+        "mpv_pan_left",
+        "mpv_pan_right",
+        "mpv_pan_zoom_reset",
+        "mpv_quit",
+    }
+)
+# Companion / ad-hoc names → canonical command-bus action.
+_MPV_ACTION_ALIASES: dict[str, str] = {
+    "pause": "mpv_pause",
+    "toggle_pause": "mpv_pause",
+    "mpv-pause": "mpv_pause",
+    "seek_forward": "mpv_seek_forward_5",
+    "seek_back": "mpv_seek_back_5",
+    "seek_forward_5": "mpv_seek_forward_5",
+    "seek_back_5": "mpv_seek_back_5",
+}
+
+
+def _resolve_mpv_bus_action(raw: str) -> str | None:
+    a = raw.strip()
+    if a in _MPV_COMMAND_BUS_SCRIPTS:
+        return a
+    return _MPV_ACTION_ALIASES.get(a.lower().replace("-", "_"))
 
 # Watchdog focus_ok=False: at most one INFO line per this many seconds (pilot log noise).
 _FOCUS_WATCHDOG_FAIL_INFO_COOLDOWN_SEC = 30.0
@@ -64,6 +111,7 @@ class ScoreboardApp:
         self.logger = _LOG
         self.settings = settings or load_settings()
         self._closing = False
+        self._main_thread_callbacks: queue.Queue[Callable[[], None]] = queue.Queue()
         self.scheduler = AfterScheduler(
             root,
             logger=_LOG.getChild("scheduler"),
@@ -223,6 +271,7 @@ class ScoreboardApp:
             self.overlay_canvas,
             self.screen_width,
             self.screen_height,
+            on_sequence_finished=self._on_replay_lockout_finished,
         )
 
         self.screensaver = Screensaver(
@@ -280,7 +329,11 @@ class ScoreboardApp:
         self._schedule_encoder_recording_poll()
         self._publish_launcher_status()
         self._log_startup_readiness()
-        self.root.after(100, self.command_poll_loop)
+        self._schedule_companion_startup_readiness_push()
+        if self.settings.companion_page_switch_enabled and self.settings.replay_enabled:
+            if not self.settings.obs_status_indicator_enabled:
+                self._schedule_companion_readiness_poll()
+        self.root.after(self.settings.command_poll_interval_ms, self.command_poll_loop)
 
     @property
     def replay_controller(self) -> ReplayController:
@@ -487,6 +540,10 @@ class ScoreboardApp:
                 )
                 return
             self.toggle_replay()
+            self._notify_companion_page_switch(
+                trigger="replay_active",
+                url=self.settings.companion_replay_active_page_url,
+            )
         elif action == "replay_off":
             if not self._replay_command_is_on():
                 self.logger.info(
@@ -494,6 +551,10 @@ class ScoreboardApp:
                 )
                 return
             self.toggle_replay()
+            self._notify_companion_page_switch(
+                trigger="replay_locked",
+                url=self.settings.companion_replay_locked_page_url,
+            )
         elif action == "score_left_plus":
             try:
                 amount = int(args.get("amount", 1))
@@ -532,8 +593,32 @@ class ScoreboardApp:
             self.replay.dismiss_replay_unavailable_overlay()
         elif action == "reload_scoreboard_safe_settings":
             self._reload_scoreboard_safe_settings(args)
+        elif (mpv_action := _resolve_mpv_bus_action(action)) is not None:
+            self._queue_mpv_control_script(mpv_action, raw_action=action)
         else:
             raise ValueError(f"unknown action: {action!r}")
+
+    def _queue_mpv_control_script(self, action: str, *, raw_action: str) -> None:
+        """Drive replay mpv via in-process JSON IPC (same Windows session as spawned mpv)."""
+        if action not in _MPV_COMMAND_BUS_SCRIPTS:
+            raise ValueError(f"invalid mpv action: {action!r}")
+        if not self.replay.mpv_ipc_eligible():
+            self.logger.info(
+                "mpv_control_skipped raw=%r resolved=%s reason=no_live_replay_mpv",
+                raw_action,
+                action,
+            )
+            return
+        self.logger.info(
+            "mpv_control_dispatched raw=%r resolved=%s",
+            raw_action,
+            action,
+        )
+        # Run on the Tk thread (here) — avoids ~1 OS scheduler quantum vs a worker thread and
+        # keeps pause/seek aligned with command processing. Pipe I/O is a few ms.
+        ok, reason = try_run_mpv_action(action)
+        if not ok:
+            self.logger.warning("mpv_control_failed action=%s reason=%s", action, reason)
 
     def _read_runtime_safe_settings(self) -> RuntimeSafeSettings:
         with self._runtime_safe_lock:
@@ -697,6 +782,22 @@ class ScoreboardApp:
                 exc_info=True,
             )
 
+    def _invoke_on_main_thread(self, fn: Callable[[], None]) -> None:
+        """Queue work for the Tk thread. Never call ``root.after`` / ``scheduler.schedule`` from other threads."""
+
+        self._main_thread_callbacks.put(fn)
+
+    def _drain_main_thread_callbacks(self) -> None:
+        while True:
+            try:
+                fn = self._main_thread_callbacks.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                fn()
+            except Exception:
+                self.logger.exception("main_thread_callback failed")
+
     def _replay_command_is_on(self) -> bool:
         # Command bus "on" means replay is visible/playing OR mid-transition.
         return (
@@ -705,10 +806,187 @@ class ScoreboardApp:
             or self.replay.is_transitioning
         )
 
+    def _compute_instant_replay_ready(
+        self, *, obs_reachable: bool, worker_reachable: bool
+    ) -> bool:
+        """True when scoreboard-side instant replay should be considered operational.
+
+        By default requires OBS WebSocket reachability (same probe as the status strip).
+        When ``companion_readiness_require_obs_websocket`` is false, OBS is skipped for
+        this gate (instant replay may still fail until OBS is up).
+
+        Also requires worker replay-trigger ``/health`` when HTTP trigger is enabled in
+        config, mpv, and the configured replay file path to exist (typically worker/OBS
+        output INSTANTREPLAY.mkv).
+        """
+        if not self.settings.replay_enabled:
+            return False
+        if resolve_mpv_executable(self.settings) is None:
+            return False
+        if not Path(self.settings.replay_video_path).is_file():
+            return False
+        if self.settings.worker_http_health_port is not None and not worker_reachable:
+            return False
+        if self.settings.companion_readiness_require_obs_websocket:
+            return obs_reachable
+        return True
+
+    def _worker_http_health_ok(self) -> bool:
+        p = self.settings.worker_http_health_port
+        if p is None:
+            return True
+        return probe_worker_replay_trigger_http(
+            self.settings.worker_http_health_host,
+            p,
+            timeout_sec=1.25,
+        )
+
+    def _should_defer_companion_readiness_switch(self) -> bool:
+        if self._replay_command_is_on():
+            return True
+        if self._replay_buffer_loading.is_sequence_active():
+            return True
+        return False
+
+    def _apply_instant_replay_companion_readiness(
+        self,
+        ready: bool,
+        *,
+        force: bool = False,
+        reason: str = "",
+    ) -> None:
+        """Drive Companion idle vs locked pages from instant-replay readiness (not replay_active)."""
+        if not self.settings.companion_page_switch_enabled:
+            return
+        # Periodic polls must not yank Companion during replay UI; startup/lockout use force=True.
+        if not force and self._should_defer_companion_readiness_switch():
+            return
+        if (
+            not force
+            and self._companion_last_instant_replay_ready is not None
+            and ready == self._companion_last_instant_replay_ready
+        ):
+            return
+        self._companion_last_instant_replay_ready = ready
+        self.logger.info(
+            "companion_instant_replay_readiness ready=%s reason=%s force=%s",
+            ready,
+            reason or "-",
+            force,
+        )
+        if ready:
+            self._notify_companion_page_switch(
+                trigger="instant_replay_ready",
+                url=self.settings.companion_replay_idle_page_url,
+            )
+        else:
+            self._notify_companion_page_switch(
+                trigger="instant_replay_not_ready",
+                url=self.settings.companion_replay_locked_page_url,
+            )
+
+    def _schedule_companion_readiness_poll(self) -> None:
+        if self._closing:
+            return
+        if not self.settings.companion_page_switch_enabled or not self.settings.replay_enabled:
+            return
+        if self.settings.obs_status_indicator_enabled:
+            return
+        self.scheduler.cancel(self._companion_readiness_poll_job)
+        self._companion_readiness_poll_job = self.scheduler.schedule(
+            15_000,
+            self._companion_readiness_poll_tick,
+            name="companion_readiness_poll",
+        )
+
+    def _companion_readiness_poll_tick(self) -> None:
+        self._companion_readiness_poll_job = None
+        if self._closing:
+            return
+        threading.Thread(
+            target=self._companion_readiness_poll_worker,
+            daemon=True,
+            name="companion-readiness-poll",
+        ).start()
+
+    def _companion_readiness_poll_worker(self) -> None:
+        try:
+            obs_ok = probe_obs_video_recorder_ready(self.settings)
+        except Exception:
+            _LOG.debug("companion readiness poll: OBS probe failed", exc_info=True)
+            obs_ok = False
+        worker_ok = self._worker_http_health_ok()
+        ready = self._compute_instant_replay_ready(
+            obs_reachable=obs_ok,
+            worker_reachable=worker_ok,
+        )
+
+        def _apply() -> None:
+            if self._closing:
+                return
+            self._apply_instant_replay_companion_readiness(ready, reason="periodic")
+            self._schedule_companion_readiness_poll()
+
+        self._invoke_on_main_thread(_apply)
+
+    def _schedule_companion_startup_readiness_push(self) -> None:
+        """Probe several times: worker/OBS often lag scoreboard by a few seconds after launcher start."""
+        for delay_ms in (750, 3000, 7000, 15_000):
+            self.root.after(delay_ms, self._companion_startup_readiness_kick_main)
+
+    def _companion_startup_readiness_kick_main(self) -> None:
+        if self._closing:
+            return
+        threading.Thread(
+            target=self._companion_readiness_startup_worker,
+            daemon=True,
+            name="companion-readiness-startup",
+        ).start()
+
+    def _companion_readiness_startup_worker(self) -> None:
+        try:
+            obs_ok, obs_reason = probe_obs_video_recorder_ready_with_reason(self.settings)
+        except Exception:
+            _LOG.debug("companion readiness startup: OBS probe failed", exc_info=True)
+            obs_ok, obs_reason = False, "probe raised (see debug log)"
+        if not obs_ok:
+            _LOG.info(
+                "companion_startup_readiness obs_probe_failed reason=%s ws=%s:%s",
+                obs_reason,
+                self.settings.obs_websocket_host,
+                self.settings.obs_websocket_port,
+            )
+        worker_ok = self._worker_http_health_ok()
+        mpv_ok = resolve_mpv_executable(self.settings) is not None
+        file_ok = Path(self.settings.replay_video_path).is_file()
+        wh_port = self.settings.worker_http_health_port
+        ready = self._compute_instant_replay_ready(
+            obs_reachable=obs_ok,
+            worker_reachable=worker_ok,
+        )
+        _LOG.info(
+            "companion_startup_readiness breakdown obs_ok=%s worker_ok=%s worker_http=%s mpv_ok=%s file_ok=%s replay_path=%s => ready=%s",
+            obs_ok,
+            worker_ok,
+            f"{self.settings.worker_http_health_host}:{wh_port}" if wh_port else "off",
+            mpv_ok,
+            file_ok,
+            self.settings.replay_video_path,
+            ready,
+        )
+
+        def _apply() -> None:
+            if self._closing:
+                return
+            self._apply_instant_replay_companion_readiness(ready, force=True, reason="startup")
+
+        self._invoke_on_main_thread(_apply)
+
     def command_poll_loop(self) -> None:
+        self._drain_main_thread_callbacks()
         self.check_for_commands()
         if not self._closing:
-            self.root.after(100, self.command_poll_loop)
+            self.root.after(self.settings.command_poll_interval_ms, self.command_poll_loop)
 
     def enable_black_screen(self) -> None:
         if self.replay.blocks_black_screen_toggle():
@@ -1215,21 +1493,30 @@ class ScoreboardApp:
 
     def _obs_status_poll_worker(self) -> None:
         try:
-            ready = probe_obs_video_recorder_ready(self.settings)
+            obs_ok = probe_obs_video_recorder_ready(self.settings)
         except Exception:
             _LOG.debug("OBS status poll failed", exc_info=True)
-            ready = False
-        self.scheduler.schedule(
-            0,
-            lambda r=ready: self._obs_status_poll_done(r),
-            name="obs_status_poll_done",
-        )
+            obs_ok = False
+        if self.settings.companion_page_switch_enabled and self.settings.replay_enabled:
+            worker_ok = self._worker_http_health_ok()
+        else:
+            worker_ok = True
+        o = obs_ok
+        w = worker_ok
+        self._invoke_on_main_thread(lambda: self._obs_status_poll_done(o, w))
 
-    def _obs_status_poll_done(self, ready: bool) -> None:
+    def _obs_status_poll_done(self, obs_ready: bool, worker_reachable: bool) -> None:
         self._obs_status_poll_busy = False
+        if self._obs_status_win is not None:
+            self._apply_obs_status_ready(obs_ready)
+        if self.settings.companion_page_switch_enabled and self.settings.replay_enabled:
+            ir = self._compute_instant_replay_ready(
+                obs_reachable=obs_ready,
+                worker_reachable=worker_reachable,
+            )
+            self._apply_instant_replay_companion_readiness(ir, reason="obs_status_poll")
         if self._obs_status_win is None:
             return
-        self._apply_obs_status_ready(ready)
         self._schedule_obs_status_poll_after()
 
     def _schedule_obs_status_poll_after(self) -> None:
@@ -1388,11 +1675,9 @@ class ScoreboardApp:
         except Exception:
             _LOG.exception("OBS recording gate failed unexpectedly")
             ok, msg = False, "Could not verify OBS (unexpected error); see logs."
-        self.scheduler.schedule(
-            0,
-            lambda o=ok, m=msg: self._on_recording_obs_check_done(o, m),
-            name="recording_obs_gate_done",
-        )
+        o = ok
+        m = msg
+        self._invoke_on_main_thread(lambda: self._on_recording_obs_check_done(o, m))
 
     def _on_recording_obs_check_done(self, ok: bool, msg: str) -> None:
         self._recording_obs_check_in_flight = False
@@ -1734,6 +2019,8 @@ class ScoreboardApp:
         self._release_topmost_job = None
         self.scheduler.cancel(self._encoder_recording_poll_job)
         self._encoder_recording_poll_job = None
+        self.scheduler.cancel(self._companion_readiness_poll_job)
+        self._companion_readiness_poll_job = None
 
         self.screensaver.teardown()
         self._encoder_status_overlay.teardown()
@@ -1926,6 +2213,86 @@ class ScoreboardApp:
 
     def start_replay_buffer_loading_overlay(self) -> None:
         self._replay_buffer_loading.start_sequence()
+
+    def _on_replay_lockout_finished(self) -> None:
+        def worker() -> None:
+            try:
+                obs_ok = probe_obs_video_recorder_ready(self.settings)
+            except Exception:
+                _LOG.debug("companion lockout end: OBS probe failed", exc_info=True)
+                obs_ok = False
+            worker_ok = self._worker_http_health_ok()
+            ready = self._compute_instant_replay_ready(
+                obs_reachable=obs_ok,
+                worker_reachable=worker_ok,
+            )
+            r = ready
+            self._invoke_on_main_thread(lambda: self._apply_lockout_finished_companion_page(r))
+
+        threading.Thread(
+            target=worker,
+            daemon=True,
+            name="companion-lockout-readiness",
+        ).start()
+
+    def _apply_lockout_finished_companion_page(self, ready: bool) -> None:
+        """After replay lockout animation: idle if systems are go, else locked."""
+        if not self.settings.companion_page_switch_enabled:
+            return
+        self._companion_last_instant_replay_ready = ready
+        if ready:
+            self._notify_companion_page_switch(
+                trigger="replay_idle",
+                url=self.settings.companion_replay_idle_page_url,
+            )
+        else:
+            self._notify_companion_page_switch(
+                trigger="replay_lockout_end_not_ready",
+                url=self.settings.companion_replay_locked_page_url,
+            )
+
+    def _notify_companion_page_switch(self, *, trigger: str, url: str) -> None:
+        if not self.settings.companion_page_switch_enabled:
+            return
+        if not isinstance(url, str) or not url.strip():
+            self.logger.warning(
+                "companion_page_switch_skipped trigger=%s reason=url_missing",
+                trigger,
+            )
+            return
+        target = url.strip()
+
+        def _send() -> None:
+            req = urllib.request.Request(target, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=2.5) as resp:
+                    code = getattr(resp, "status", 200)
+                self.logger.info(
+                    "companion_page_switch_ok trigger=%s status=%s url=%s",
+                    trigger,
+                    code,
+                    target,
+                )
+            except urllib.error.HTTPError as exc:
+                self.logger.warning(
+                    "companion_page_switch_http_error trigger=%s status=%s url=%s",
+                    trigger,
+                    exc.code,
+                    target,
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "companion_page_switch_failed trigger=%s error=%s url=%s",
+                    trigger,
+                    exc,
+                    target,
+                )
+
+        threading.Thread(
+            target=_send,
+            name=f"companion-page-switch-{trigger}",
+            daemon=True,
+        ).start()
 
     def ensure_window_opaque(self) -> None:
         try:

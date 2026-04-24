@@ -947,6 +947,15 @@ function Invoke-ScoreboardStatusWatchTick {
     return
   }
   if (-not $status.Available) { return }
+  if ($null -eq $status.UpdatedAt) {
+    Write-LauncherLog 'Scoreboard status watch: ignoring status JSON with missing/invalid updated_at (stale guard).'
+    return
+  }
+  $ageSec = ([DateTime]::UtcNow - $status.UpdatedAt).TotalSeconds
+  if ($ageSec -gt $ScoreboardStatusStaleSec) {
+    Write-LauncherLog ("Scoreboard status watch: ignoring stale status JSON (age_sec={0:0.0} > stale_sec={1})." -f $ageSec, $ScoreboardStatusStaleSec)
+    return
+  }
   $current = $status.ScreensaverActive
   if ($null -eq $current) { return }
   $script:ScoreboardScreensaverActive = [bool]$current

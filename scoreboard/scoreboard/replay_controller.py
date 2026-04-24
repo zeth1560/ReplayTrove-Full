@@ -11,6 +11,7 @@ import threading
 import time
 import tkinter as tk
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 from PIL import Image, ImageTk
@@ -132,6 +133,18 @@ class ReplayController:
     @property
     def replay_video_active(self) -> bool:
         return self._replay_video_active
+
+    def mpv_ipc_eligible(self) -> bool:
+        """True when replay mpv is running (JSON IPC on ``\\\\.\\pipe\\mpv`` is this process)."""
+        if not self._replay_video_active:
+            return False
+        proc = self._replay_video_process
+        if proc is None:
+            return False
+        try:
+            return proc.poll() is None
+        except Exception:
+            return False
 
     def _set_phase(self, p: ReplayPhase) -> None:
         if p != self._phase:
@@ -881,6 +894,8 @@ class ReplayController:
             size_bytes,
         )
 
+        self._best_effort_quit_mpv_ipc_listeners()
+
         mpv_executable = self._resolve_mpv_executable()
         if mpv_executable is None:
             _LOG.error("Replay: launch failed — mpv not found")
@@ -1160,6 +1175,51 @@ class ReplayController:
         except OSError:
             _LOG.warning("Replay: could not remove mpv input conf", exc_info=True)
         self._mpv_input_conf_path = None
+
+    def _best_effort_quit_mpv_ipc_listeners(self) -> None:
+        """Release ``\\\\.\\pipe\\mpv`` if a previous mpv is still listening.
+
+        Replay uses a fixed IPC pipe name; a zombie or stray mpv can accept JSON IPC while
+        the visible replay instance is a different process, which breaks Companion control
+        scripts. Sending ``quit`` via the shared helper is safe when no server exists
+        (PowerShell exits non-zero; we ignore).
+        """
+        if os.name != "nt":
+            return
+        script = Path(__file__).resolve().parents[2] / "scripts" / "mpv_quit.ps1"
+        if not script.is_file():
+            return
+        popen_kw: dict[str, int] = {}
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            popen_kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+        try:
+            completed = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(script),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+                **popen_kw,
+            )
+            if completed.returncode != 0:
+                _LOG.debug(
+                    "Replay: prep mpv_quit exit=%s stderr=%s",
+                    completed.returncode,
+                    (completed.stderr or "").strip()[:400],
+                )
+        except OSError:
+            _LOG.debug("Replay: prep mpv_quit failed", exc_info=True)
+        except subprocess.TimeoutExpired:
+            _LOG.debug("Replay: prep mpv_quit timed out")
+        time.sleep(0.1)
 
     def _resolve_mpv_executable(self) -> str | None:
         return resolve_mpv_executable(self._settings)
