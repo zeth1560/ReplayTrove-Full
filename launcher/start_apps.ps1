@@ -367,8 +367,20 @@ function Wait-LauncherAck {
 
 function Get-PythonInterpreter {
   param([string]$AppDir)
-  $name = if ($DebugMode) { 'python.exe' } else { 'pythonw.exe' }
-  Join-Path $AppDir ".venv\Scripts\$name"
+  $scripts = Join-Path $AppDir '.venv\Scripts'
+  $pyw = Join-Path $scripts 'pythonw.exe'
+  $py = Join-Path $scripts 'python.exe'
+  if ($DebugMode) {
+    return $py
+  }
+  if (Test-Path -LiteralPath $pyw) {
+    return $pyw
+  }
+  if (Test-Path -LiteralPath $py) {
+    Write-LauncherLog "WARN: pythonw.exe not found at $pyw; using python.exe (windowless workers prefer pythonw — repair venv if consoles appear)"
+    return $py
+  }
+  return $pyw
 }
 
 function Normalize-AppDirectoryPath {
@@ -1728,6 +1740,9 @@ if ($EnableLauncherUi) {
 foreach ($item in $preflight) {
   if (-not (Test-Path -LiteralPath $item.Path)) {
     Write-LauncherLog "PREFLIGHT FAIL: $($item.Label) not found at $($item.Path)"
+    if ($item.Label -like '*venv Python*') {
+      Write-LauncherLog "Hint: in that component folder run: py -3 -m venv .venv  then  .\.venv\Scripts\pip install -r requirements.txt"
+    }
     Wait-LauncherAck 'Preflight failed; press Enter to exit'
     exit 1
   }
