@@ -19,6 +19,37 @@ function Get-UnifiedNestedValue {
   return $current
 }
 
+<#
+  ConvertFrom-Json -AsHashtable exists only in PowerShell 6+. Windows PowerShell 5.1 returns
+  PSCustomObject; we normalize to nested hashtables so Get-UnifiedNestedValue (IDictionary) works.
+#>
+function ConvertTo-NestedHashtable {
+  param($Node)
+  if ($null -eq $Node) { return $null }
+  if ($Node -is [pscustomobject]) {
+    $out = @{}
+    foreach ($p in $Node.PSObject.Properties) {
+      $out[$p.Name] = ConvertTo-NestedHashtable -Node $p.Value
+    }
+    return $out
+  }
+  if ($Node -is [System.Collections.IDictionary]) {
+    $out = @{}
+    foreach ($k in @($Node.Keys)) {
+      $out[$k] = ConvertTo-NestedHashtable -Node $Node[$k]
+    }
+    return $out
+  }
+  if ($Node -is [System.Collections.IEnumerable] -and -not ($Node -is [string])) {
+    $list = New-Object System.Collections.Generic.List[object]
+    foreach ($item in $Node) {
+      $list.Add((ConvertTo-NestedHashtable -Node $item))
+    }
+    return $list.ToArray()
+  }
+  return $Node
+}
+
 function Get-ReplayTroveUnifiedConfig {
   $defaultPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'config\settings.json'
   $cfgPath = if ($env:REPLAYTROVE_SETTINGS_FILE) { $env:REPLAYTROVE_SETTINGS_FILE } else { $defaultPath }
@@ -39,7 +70,8 @@ function Get-ReplayTroveUnifiedConfig {
   $snapshot.Found = $true
   try {
     $raw = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8
-    $obj = $raw | ConvertFrom-Json -AsHashtable
+    $parsed = $raw | ConvertFrom-Json
+    $obj = ConvertTo-NestedHashtable -Node $parsed
     $snapshot.Data = $obj
     $snapshot.SchemaVersion = $obj['schemaVersion']
     $snapshot.GeneralLoaded = ($obj['general'] -is [System.Collections.IDictionary])

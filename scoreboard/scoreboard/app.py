@@ -81,12 +81,15 @@ class ScoreboardApp:
             self._commands_root / "scoreboard" / "processed"
         )
         self._commands_failed_dir = str(self._commands_root / "scoreboard" / "failed")
+        # Compatibility path: hardcoded legacy commands tree (send_command.ps1 default, old installs).
         self._legacy_commands_root = Path(DEFAULT_COMMANDS_ROOT)
         self._legacy_pending_dir = str(
             self._legacy_commands_root / "scoreboard" / "pending"
         )
+        # Primary pending dir from unified scoreboard.commandsRoot; legacy dir appended when paths differ.
         self._command_pending_scan_dirs: list[str] = [self._commands_pending_dir]
         if Path(self._legacy_pending_dir) != Path(self._commands_pending_dir):
+            # Legacy command-bus bridge: scan both pending folders so old send_command targets still deliver.
             self._command_pending_scan_dirs.append(self._legacy_pending_dir)
             self.logger.warning(
                 "scoreboard command bus root diverged from legacy path configured_root=%s legacy_root=%s compatibility_bridge=legacy_pending_enabled",
@@ -126,6 +129,7 @@ class ScoreboardApp:
         self._encoder_recording_poll_job: str | None = None
         self._encoder_recording_prev_seq: int | None = None
         self._encoder_sync_believes_recording = False
+        self._encoder_recording_idle_streak = 0
         self.focus_watchdog_ticks_left = 0
         self._focus_watchdog_exhausted_logged = False
         self.last_input_ms = int(time.monotonic() * 1000)
@@ -310,6 +314,7 @@ class ScoreboardApp:
                         and Path(self._legacy_pending_dir)
                         != Path(self._commands_pending_dir)
                     ):
+                        # Compatibility path: command file landed under legacy pending (e.g. send_command.ps1 default tree).
                         self.logger.warning(
                             "command_bus_legacy_bridge path=%s configured_pending=%s",
                             path,
@@ -422,11 +427,18 @@ class ScoreboardApp:
                 )
 
     def handle_command(self, action: str, args: dict[str, Any]) -> None:
+        # Any command-bus action (Companion, send_command.ps1, etc.) counts as operator
+        # activity: leave slideshow/screensaver and reset idle timing.
+        if self.screensaver.is_active():
+            self.screensaver.stop()
+        self.last_input_ms = int(time.monotonic() * 1000)
+
         if action == "black_screen_on":
             self.enable_black_screen()
         elif action == "black_screen_off":
             self.disable_black_screen()
         elif action == "toggle_replay":
+            # Compatibility path: deprecated command-bus action; prefer replay_on / replay_off from canonical script.
             self.logger.warning(
                 "replay_command_deprecated action=toggle_replay; use replay_on/replay_off (non-canonical operator path)",
             )
@@ -771,11 +783,12 @@ class ScoreboardApp:
 
     def _log_startup_readiness(self) -> None:
         log_path = (self.settings.scoreboard_log_file or "").strip()
+        central = (self.settings.central_logs_root or "").strip()
         _LOG.info(
             "Startup readiness: command_bus=ok replay_enabled=%s "
             "recording_overlay=ok scheduler=ok synthetic_focus_click=%s "
             "obs_recording_gate=%s encoder_recording_sync=%s obs_restart_chord=%s "
-            "obs_status_indicator=%s log_file=%s",
+            "obs_status_indicator=%s central_logs_root=%s legacy_log_file=%s",
             self.settings.replay_enabled,
             self.settings.synthetic_focus_click,
             "on"
@@ -784,7 +797,8 @@ class ScoreboardApp:
             "on" if self.settings.recording_encoder_sync_enabled else "off",
             "on" if self.settings.obs_restart_chord_enabled else "off",
             "on" if self.settings.obs_status_indicator_enabled else "off",
-            repr(log_path) if log_path else "(stderr only)",
+            repr(central) if central else "(default)",
+            repr(log_path) if log_path else "(none)",
         )
 
     def diagnostic_snapshot(self) -> dict[str, Any]:
@@ -1072,6 +1086,9 @@ class ScoreboardApp:
         capturing = snap.capturing
         was_enc = self._encoder_sync_believes_recording
 
+        if capturing:
+            self._encoder_recording_idle_streak = 0
+
         if capturing and not was_enc:
             ro = self.recording_overlay
             if ro.state != RecordingOverlayState.COUNTING:
@@ -1083,13 +1100,19 @@ class ScoreboardApp:
                     ro.start_or_restart_countdown()
             self._encoder_sync_believes_recording = True
         elif not capturing and was_enc:
-            _LOG.info(
-                "Recording overlay: encoder idle — hiding in-progress timer if shown (%s)",
-                path,
-            )
-            self.recording_overlay.dismiss_from_encoder_idle()
-            self._encoder_sync_believes_recording = False
+            self._encoder_recording_idle_streak += 1
+            # Require two consecutive idle samples so a single stale/glitched JSON read
+            # does not flash-dismiss the overlay while ffmpeg is still starting.
+            if self._encoder_recording_idle_streak >= 2:
+                _LOG.info(
+                    "Recording overlay: encoder idle — hiding in-progress timer if shown (%s)",
+                    path,
+                )
+                self.recording_overlay.dismiss_from_encoder_idle()
+                self._encoder_sync_believes_recording = False
+                self._encoder_recording_idle_streak = 0
         else:
+            self._encoder_recording_idle_streak = 0
             self._encoder_sync_believes_recording = capturing
 
         self._schedule_encoder_recording_poll()

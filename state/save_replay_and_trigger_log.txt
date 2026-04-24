@@ -75,3 +75,123 @@
 2026-04-22 09:22:39.286 cid=95268ce7da634dadaee219116e5400fe  stage=worker_trigger mode=trigger_file created=C:\ReplayTrove\state\obs_host_port_convergence_test.trigger
 2026-04-22 09:22:39.288 cid=95268ce7da634dadaee219116e5400fe  stage=scoreboard_replay_on skipped=true
 2026-04-22 09:22:39.289 cid=95268ce7da634dadaee219116e5400fe  pipeline=success
+2026-04-22 12:10:50.226 cid=aeb181120f704b648a96ca71b9c51085  config_unified_parse_error path=C:\ReplayTrove\config\settings.json error=A parameter cannot be found that matches parameter name 'AsHashtable'.
+2026-04-22 12:10:50.269 cid=aeb181120f704b648a96ca71b9c51085  config_sources obs_host=default obs_port=default obs_password=default worker_host=default worker_port=default worker_timeout=default canonical_token=default precedence=param>unified>env>default unified_found=True
+2026-04-22 12:10:50.271 cid=aeb181120f704b648a96ca71b9c51085  config_fallback_warning replay_trigger_http_* fell_back_past_unified preferred_unified_keys=worker.httpReplayTriggerHost,worker.httpReplayTriggerPort,worker.httpReplayTriggerTimeoutSec
+2026-04-22 12:10:50.272 cid=aeb181120f704b648a96ca71b9c51085  config_fallback_warning obs_websocket_host_port fell_back_past_unified preferred_unified_keys=scoreboard.obsWebsocketHost,scoreboard.obsWebsocketPort
+2026-04-22 12:10:50.273 cid=aeb181120f704b648a96ca71b9c51085  config_fallback_warning obs_websocket_password fell_back_past_unified preferred_unified_key=scoreboard.obsWebsocketPassword
+2026-04-22 12:10:50.276 cid=aeb181120f704b648a96ca71b9c51085  config_fallback_warning replay_canonical_token_missing requests will be classified untrusted
+2026-04-22 12:10:50.278 cid=aeb181120f704b648a96ca71b9c51085  pipeline=start obs_host=localhost obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 12:10:50.282 cid=aeb181120f704b648a96ca71b9c51085  stage=obs_save password_missing=true note=attempting_without_password_if_obs_requires_auth_this_will_fail
+2026-04-22 12:10:50.283 cid=aeb181120f704b648a96ca71b9c51085  stage=obs_save start script=C:\ReplayTrove\scripts\obs_save_replay.ps1 host=localhost port=4455
+2026-04-22 12:10:56.379 cid=aeb181120f704b648a96ca71b9c51085  stage=obs_save exit_code=1
+2026-04-22 12:10:56.397 cid=aeb181120f704b648a96ca71b9c51085  pipeline=fail reason=obs_save_replay failed (exit_code=1)
+2026-04-22 14:16:20.351 cid=3fbb8a3c936d4d1abcf9bbb516a43020  config_sources obs_host=unified obs_port=unified obs_password=unified worker_host=unified worker_port=unified worker_timeout=unified canonical_token=default precedence=param>unified>env>default unified_found=True
+2026-04-22 14:16:20.363 cid=3fbb8a3c936d4d1abcf9bbb516a43020  config_fallback_warning replay_canonical_token_missing requests will be classified untrusted
+2026-04-22 14:16:20.370 cid=3fbb8a3c936d4d1abcf9bbb516a43020  pipeline=start obs_host=localhost obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 14:16:20.385 cid=3fbb8a3c936d4d1abcf9bbb516a43020  stage=obs_save start script=C:\ReplayTrove\scripts\obs_save_replay.ps1 host=localhost port=4455
+2026-04-22 14:16:22.559 cid=3fbb8a3c936d4d1abcf9bbb516a43020  stage=obs_save exit_code=0
+2026-04-22 14:16:22.575 cid=3fbb8a3c936d4d1abcf9bbb516a43020  stage=worker_trigger start uri=http://127.0.0.1:18765/replay?trigger=1776885380&request_id=3fbb8a3c936d4d1abcf9bbb516a43020&trigger_source=save_replay_and_trigger.ps1 timeout_sec=45 canonical_token_supplied=False
+2026-04-22 14:18:00.653 cid=3fbb8a3c936d4d1abcf9bbb516a43020  stage=worker_trigger http_status=200 body={"success": true, "selected_source_path": "C:\\ReplayTrove\\long_clips\\replay_ 2026-04-22T14-16-22.mkv", "incoming_path": "C:\\ReplayTrove\\clips\\2026-04-22T14-16-22.mp4", "detected_at": "2026-04-22T19:16:22.633793+00:00", "stability_confirmed": true, "failure_reason": null, "scoreboard_replay_path": "C:\\ReplayTrove\\INSTANTREPLAY.mkv", "processing_error": null, "source_deleted": true, "request_id": "3fbb8a3c936d4d1abcf9bbb516a43020", "correlation_id": "3fbb8a3c936d4d1abcf9bbb516a43020", "canonical_trust_category": "canonical_claim_untrusted", "canonical_trust_reason": "canonical_token_not_configured", "exit_code": 0}
+2026-04-22 14:18:00.659 cid=3fbb8a3c936d4d1abcf9bbb516a43020  stage=worker_trigger parsed_success=True parsed_failure_reason= parsed_exit_code=0 trust_category=canonical_claim_untrusted trust_reason=canonical_token_not_configured
+2026-04-22 14:18:00.668 cid=3fbb8a3c936d4d1abcf9bbb516a43020  stage=scoreboard_replay_on start script=C:\ReplayTrove\scripts\send_command.ps1
+2026-04-22 14:18:00.793 cid=3fbb8a3c936d4d1abcf9bbb516a43020  stage=scoreboard_replay_on exit_code=0
+2026-04-22 14:18:00.794 cid=3fbb8a3c936d4d1abcf9bbb516a43020  pipeline=success
+2026-04-22 14:37:47.047 cid=da8cb3e35cd840dda3b9bfc3818bc18f  config_sources obs_host=unified obs_port=unified obs_password=unified worker_host=unified worker_port=unified worker_timeout=unified canonical_token=default precedence=param>unified>env>default unified_found=True
+2026-04-22 14:37:47.080 cid=da8cb3e35cd840dda3b9bfc3818bc18f  config_fallback_warning replay_canonical_token_missing requests will be classified untrusted
+2026-04-22 14:37:47.089 cid=da8cb3e35cd840dda3b9bfc3818bc18f  pipeline=start obs_host=localhost obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 14:37:47.117 cid=da8cb3e35cd840dda3b9bfc3818bc18f  stage=obs_save start script=C:\ReplayTrove\scripts\obs_save_replay.ps1 host=localhost port=4455
+2026-04-22 14:37:49.256 cid=da8cb3e35cd840dda3b9bfc3818bc18f  stage=obs_save exit_code=0
+2026-04-22 14:37:49.270 cid=da8cb3e35cd840dda3b9bfc3818bc18f  stage=worker_trigger start uri=http://127.0.0.1:18765/replay?trigger=1776886666&request_id=da8cb3e35cd840dda3b9bfc3818bc18f&trigger_source=save_replay_and_trigger.ps1 timeout_sec=45 canonical_token_supplied=False
+2026-04-22 14:45:58.508 cid=992875b0be0947b0bc80b622bb7c7c07  config_sources obs_host=unified obs_port=unified obs_password=unified worker_host=unified worker_port=unified worker_timeout=unified canonical_token=default precedence=param>unified>env>default unified_found=True
+2026-04-22 14:45:58.534 cid=992875b0be0947b0bc80b622bb7c7c07  config_fallback_warning replay_canonical_token_missing requests will be classified untrusted
+2026-04-22 14:45:58.538 cid=992875b0be0947b0bc80b622bb7c7c07  pipeline=start obs_host=localhost obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 14:45:58.555 cid=992875b0be0947b0bc80b622bb7c7c07  stage=obs_save start script=C:\ReplayTrove\scripts\obs_save_replay.ps1 host=localhost port=4455
+2026-04-22 14:46:00.713 cid=992875b0be0947b0bc80b622bb7c7c07  stage=obs_save exit_code=0
+2026-04-22 14:46:00.724 cid=992875b0be0947b0bc80b622bb7c7c07  stage=worker_trigger start uri=http://127.0.0.1:18765/replay?trigger=1776887158&request_id=992875b0be0947b0bc80b622bb7c7c07&trigger_source=save_replay_and_trigger.ps1 timeout_sec=45 canonical_token_supplied=False
+2026-04-22 14:47:58.607 cid=e1ee16a77ee2478d8bdd2c958ca78d5a  config_sources obs_host=unified obs_port=unified obs_password=unified worker_host=unified worker_port=unified worker_timeout=unified canonical_token=default precedence=param>unified>env>default unified_found=True
+2026-04-22 14:47:58.640 cid=e1ee16a77ee2478d8bdd2c958ca78d5a  config_fallback_warning replay_canonical_token_missing requests will be classified untrusted
+2026-04-22 14:47:58.661 cid=e1ee16a77ee2478d8bdd2c958ca78d5a  pipeline=start obs_host=localhost obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 14:47:58.700 cid=e1ee16a77ee2478d8bdd2c958ca78d5a  stage=obs_save start script=C:\ReplayTrove\scripts\obs_save_replay.ps1 host=localhost port=4455
+2026-04-22 14:48:00.859 cid=e1ee16a77ee2478d8bdd2c958ca78d5a  stage=obs_save exit_code=0
+2026-04-22 14:48:00.879 cid=e1ee16a77ee2478d8bdd2c958ca78d5a  stage=worker_trigger start uri=http://127.0.0.1:18765/replay?trigger=1776887278&request_id=e1ee16a77ee2478d8bdd2c958ca78d5a&trigger_source=save_replay_and_trigger.ps1 timeout_sec=45 canonical_token_supplied=False
+2026-04-22 14:51:09.490 cid=e82d93eeb06f4483a56d864da9d3b8d6  config_sources obs_host=unified obs_port=unified obs_password=unified worker_host=unified worker_port=unified worker_timeout=unified canonical_token=default precedence=param>unified>env>default unified_found=True
+2026-04-22 14:51:09.500 cid=e82d93eeb06f4483a56d864da9d3b8d6  config_fallback_warning replay_canonical_token_missing requests will be classified untrusted
+2026-04-22 14:51:09.503 cid=e82d93eeb06f4483a56d864da9d3b8d6  pipeline=start obs_host=localhost obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 14:51:09.511 cid=e82d93eeb06f4483a56d864da9d3b8d6  stage=obs_save start script=C:\ReplayTrove\scripts\obs_save_replay.ps1 host=localhost port=4455
+2026-04-22 14:51:10.628 cid=e82d93eeb06f4483a56d864da9d3b8d6  stage=obs_save exit_code=0
+2026-04-22 14:51:10.648 cid=e82d93eeb06f4483a56d864da9d3b8d6  stage=worker_trigger start uri=http://127.0.0.1:18765/replay?trigger=1776887469&request_id=e82d93eeb06f4483a56d864da9d3b8d6&trigger_source=save_replay_and_trigger.ps1 timeout_sec=45 canonical_token_supplied=False
+2026-04-22 15:05:44.089 cid=1d72192fc0d148f89fe40cec99702930  config_sources obs_host=unified obs_port=unified obs_password=unified worker_host=unified worker_port=unified worker_timeout=unified canonical_token=default precedence=param>unified>env>default unified_found=True
+2026-04-22 15:05:44.100 cid=1d72192fc0d148f89fe40cec99702930  config_fallback_warning replay_canonical_token_missing requests will be classified untrusted
+2026-04-22 15:05:44.103 cid=1d72192fc0d148f89fe40cec99702930  pipeline=start obs_host=localhost obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 15:05:44.106 cid=1d72192fc0d148f89fe40cec99702930  stage=obs_save start in_process=true host=localhost port=4455
+2026-04-22 15:05:44.267 cid=1d72192fc0d148f89fe40cec99702930  stage=obs_save ok
+2026-04-22 15:05:44.274 cid=1d72192fc0d148f89fe40cec99702930  stage=worker_trigger start uri=http://127.0.0.1:18765/replay?trigger=1776888343&request_id=1d72192fc0d148f89fe40cec99702930&trigger_source=save_replay_and_trigger.ps1 timeout_sec=45 canonical_token_supplied=False
+2026-04-22 15:05:47.431 cid=1d72192fc0d148f89fe40cec99702930  stage=worker_trigger transport_error=Object reference not set to an instance of an object.
+2026-04-22 15:05:47.436 cid=1d72192fc0d148f89fe40cec99702930  pipeline=fail reason=worker replay HTTP request failed: Object reference not set to an instance of an object.
+2026-04-22 15:09:58.734 cid=135ec73ca4eb464f847207885579ac1b  config_sources obs_host=unified obs_port=unified obs_password=unified worker_host=unified worker_port=unified worker_timeout=unified canonical_token=default precedence=param>unified>env>default unified_found=True
+2026-04-22 15:09:58.746 cid=135ec73ca4eb464f847207885579ac1b  config_fallback_warning replay_canonical_token_missing requests will be classified untrusted
+2026-04-22 15:09:58.751 cid=135ec73ca4eb464f847207885579ac1b  pipeline=start obs_host=localhost obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 15:09:58.754 cid=135ec73ca4eb464f847207885579ac1b  stage=obs_save start in_process=true host=localhost port=4455
+2026-04-22 15:09:58.889 cid=135ec73ca4eb464f847207885579ac1b  stage=obs_save ok
+2026-04-22 15:09:58.896 cid=135ec73ca4eb464f847207885579ac1b  stage=worker_trigger start uri=http://127.0.0.1:18765/replay?trigger=1776888598&request_id=135ec73ca4eb464f847207885579ac1b&trigger_source=save_replay_and_trigger.ps1 timeout_sec=45 canonical_token_supplied=False
+2026-04-22 15:10:00.635 cid=135ec73ca4eb464f847207885579ac1b  stage=worker_trigger http_status=200 body={"success": true, "selected_source_path": "C:\\ReplayTrove\\long_clips\\replay_ 2026-04-22T15-09-59.mkv", "incoming_path": "C:\\ReplayTrove\\clips\\2026-04-22T15-09-59.mp4", "detected_at": "2026-04-22T20:10:00.004965+00:00", "stability_confirmed": true, "failure_reason": null, "scoreboard_replay_path": "C:\\ReplayTrove\\INSTANTREPLAY.mkv", "processing_error": null, "source_deleted": true, "request_id": "135ec73ca4eb464f847207885579ac1b", "correlation_id": "135ec73ca4eb464f847207885579ac1b", "canonical_trust_category": "canonical_claim_untrusted", "canonical_trust_reason": "canonical_token_not_configured", "exit_code": 0}
+2026-04-22 15:10:00.644 cid=135ec73ca4eb464f847207885579ac1b  stage=worker_trigger parsed_success=True parsed_failure_reason= parsed_exit_code=0 trust_category=canonical_claim_untrusted trust_reason=canonical_token_not_configured
+2026-04-22 15:10:00.656 cid=135ec73ca4eb464f847207885579ac1b  stage=scoreboard_replay_on start script=C:\ReplayTrove\scripts\send_command.ps1
+2026-04-22 15:10:00.798 cid=135ec73ca4eb464f847207885579ac1b  stage=scoreboard_replay_on exit_code=0
+2026-04-22 15:10:00.801 cid=135ec73ca4eb464f847207885579ac1b  pipeline=success
+2026-04-22 15:10:58.835 cid=ca094756c4f64f3299e9ab59eebec9a5  config_sources obs_host=unified obs_port=unified obs_password=unified worker_host=unified worker_port=unified worker_timeout=unified canonical_token=default precedence=param>unified>env>default unified_found=True
+2026-04-22 15:10:58.844 cid=ca094756c4f64f3299e9ab59eebec9a5  config_fallback_warning replay_canonical_token_missing requests will be classified untrusted
+2026-04-22 15:10:58.848 cid=ca094756c4f64f3299e9ab59eebec9a5  pipeline=start obs_host=localhost obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 15:10:58.852 cid=ca094756c4f64f3299e9ab59eebec9a5  stage=obs_save start in_process=true host=localhost port=4455
+2026-04-22 15:10:58.989 cid=ca094756c4f64f3299e9ab59eebec9a5  stage=obs_save ok
+2026-04-22 15:10:58.996 cid=ca094756c4f64f3299e9ab59eebec9a5  stage=worker_trigger start uri=http://127.0.0.1:18765/replay?trigger=1776888658&request_id=ca094756c4f64f3299e9ab59eebec9a5&trigger_source=save_replay_and_trigger.ps1 timeout_sec=45 canonical_token_supplied=False
+2026-04-22 15:11:00.416 cid=47104438298d418f9b110ba319e35a2a  config_sources obs_host=unified obs_port=unified obs_password=unified worker_host=unified worker_port=unified worker_timeout=unified canonical_token=default precedence=param>unified>env>default unified_found=True
+2026-04-22 15:11:00.434 cid=47104438298d418f9b110ba319e35a2a  config_fallback_warning replay_canonical_token_missing requests will be classified untrusted
+2026-04-22 15:11:00.437 cid=47104438298d418f9b110ba319e35a2a  pipeline=start obs_host=localhost obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 15:11:00.440 cid=47104438298d418f9b110ba319e35a2a  stage=obs_save start in_process=true host=localhost port=4455
+2026-04-22 15:11:00.554 cid=47104438298d418f9b110ba319e35a2a  stage=obs_save ok
+2026-04-22 15:11:00.561 cid=47104438298d418f9b110ba319e35a2a  stage=worker_trigger start uri=http://127.0.0.1:18765/replay?trigger=1776888660&request_id=47104438298d418f9b110ba319e35a2a&trigger_source=save_replay_and_trigger.ps1 timeout_sec=45 canonical_token_supplied=False
+2026-04-22 15:11:00.820 cid=ca094756c4f64f3299e9ab59eebec9a5  stage=worker_trigger http_status=200 body={"success": true, "selected_source_path": "C:\\ReplayTrove\\long_clips\\replay_ 2026-04-22T15-10-59.mkv", "incoming_path": "C:\\ReplayTrove\\clips\\2026-04-22T15-10-59.mp4", "detected_at": "2026-04-22T20:11:00.117266+00:00", "stability_confirmed": true, "failure_reason": null, "scoreboard_replay_path": "C:\\ReplayTrove\\INSTANTREPLAY.mkv", "processing_error": null, "source_deleted": true, "request_id": "ca094756c4f64f3299e9ab59eebec9a5", "correlation_id": "ca094756c4f64f3299e9ab59eebec9a5", "canonical_trust_category": "canonical_claim_untrusted", "canonical_trust_reason": "canonical_token_not_configured", "exit_code": 0}
+2026-04-22 15:11:00.829 cid=ca094756c4f64f3299e9ab59eebec9a5  stage=worker_trigger parsed_success=True parsed_failure_reason= parsed_exit_code=0 trust_category=canonical_claim_untrusted trust_reason=canonical_token_not_configured
+2026-04-22 15:11:00.839 cid=ca094756c4f64f3299e9ab59eebec9a5  stage=scoreboard_replay_on start script=C:\ReplayTrove\scripts\send_command.ps1
+2026-04-22 15:11:00.959 cid=ca094756c4f64f3299e9ab59eebec9a5  stage=scoreboard_replay_on exit_code=0
+2026-04-22 15:11:00.972 cid=ca094756c4f64f3299e9ab59eebec9a5  pipeline=success
+2026-04-22 15:11:29.479 cid=47104438298d418f9b110ba319e35a2a  stage=worker_trigger http_status=200 body={"success": true, "selected_source_path": "C:\\ReplayTrove\\long_clips\\replay_ 2026-04-22T15-11-01.mkv", "incoming_path": "C:\\ReplayTrove\\clips\\2026-04-22T15-11-01.mp4", "detected_at": "2026-04-22T20:11:01.652936+00:00", "stability_confirmed": true, "failure_reason": null, "scoreboard_replay_path": "C:\\ReplayTrove\\INSTANTREPLAY.mkv", "processing_error": null, "source_deleted": true, "request_id": "47104438298d418f9b110ba319e35a2a", "correlation_id": "47104438298d418f9b110ba319e35a2a", "canonical_trust_category": "canonical_claim_untrusted", "canonical_trust_reason": "canonical_token_not_configured", "exit_code": 0}
+2026-04-22 15:11:29.489 cid=47104438298d418f9b110ba319e35a2a  stage=worker_trigger parsed_success=True parsed_failure_reason= parsed_exit_code=0 trust_category=canonical_claim_untrusted trust_reason=canonical_token_not_configured
+2026-04-22 15:11:29.498 cid=47104438298d418f9b110ba319e35a2a  stage=scoreboard_replay_on start script=C:\ReplayTrove\scripts\send_command.ps1
+2026-04-22 15:11:29.636 cid=47104438298d418f9b110ba319e35a2a  stage=scoreboard_replay_on exit_code=0
+2026-04-22 15:11:29.650 cid=47104438298d418f9b110ba319e35a2a  pipeline=success
+2026-04-22 15:19:04.189 cid=5795be8d485b4c1a970d48c81c1fb26f  config_sources obs_host=unified obs_port=unified obs_password=unified worker_host=unified worker_port=unified worker_timeout=unified canonical_token=default precedence=param>unified>env>default unified_found=True
+2026-04-22 15:19:04.208 cid=5795be8d485b4c1a970d48c81c1fb26f  config_fallback_warning replay_canonical_token_missing requests will be classified untrusted
+2026-04-22 15:19:04.210 cid=5795be8d485b4c1a970d48c81c1fb26f  pipeline=start obs_host=localhost obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 15:19:04.214 cid=5795be8d485b4c1a970d48c81c1fb26f  stage=obs_save start in_process=true host=localhost port=4455
+2026-04-22 15:19:04.343 cid=5795be8d485b4c1a970d48c81c1fb26f  stage=obs_save ok
+2026-04-22 15:19:04.352 cid=5795be8d485b4c1a970d48c81c1fb26f  stage=worker_trigger start uri=http://127.0.0.1:18765/replay?trigger=1776889144&request_id=5795be8d485b4c1a970d48c81c1fb26f&trigger_source=save_replay_and_trigger.ps1 timeout_sec=45 canonical_token_supplied=False
+2026-04-22 15:19:06.110 cid=5795be8d485b4c1a970d48c81c1fb26f  stage=worker_trigger http_status=200 body={"success": true, "selected_source_path": "C:\\ReplayTrove\\long_clips\\replay_ 2026-04-22T15-19-05.mkv", "incoming_path": "C:\\ReplayTrove\\clips\\2026-04-22T15-19-05.mp4", "detected_at": "2026-04-22T20:19:05.460026+00:00", "stability_confirmed": true, "failure_reason": null, "scoreboard_replay_path": "C:\\ReplayTrove\\INSTANTREPLAY.mkv", "processing_error": null, "source_deleted": true, "request_id": "5795be8d485b4c1a970d48c81c1fb26f", "correlation_id": "5795be8d485b4c1a970d48c81c1fb26f", "canonical_trust_category": "canonical_claim_untrusted", "canonical_trust_reason": "canonical_token_not_configured", "exit_code": 0}
+2026-04-22 15:19:06.122 cid=5795be8d485b4c1a970d48c81c1fb26f  stage=worker_trigger parsed_success=True parsed_failure_reason= parsed_exit_code=0 trust_category=canonical_claim_untrusted trust_reason=canonical_token_not_configured
+2026-04-22 15:19:06.131 cid=5795be8d485b4c1a970d48c81c1fb26f  stage=scoreboard_replay_on start script=C:\ReplayTrove\scripts\send_command.ps1
+2026-04-22 15:19:06.252 cid=5795be8d485b4c1a970d48c81c1fb26f  stage=scoreboard_replay_on exit_code=0
+2026-04-22 15:19:06.264 cid=5795be8d485b4c1a970d48c81c1fb26f  pipeline=success
+2026-04-22 15:23:01.983 cid=59187ec729ac4047bb3be2741aa3981e  config_sources obs_host=unified obs_port=unified obs_password=unified worker_host=unified worker_port=unified worker_timeout=unified canonical_token=default precedence=param>unified>env>default unified_found=True
+2026-04-22 15:23:01.991 cid=59187ec729ac4047bb3be2741aa3981e  config_fallback_warning replay_canonical_token_missing requests will be classified untrusted
+2026-04-22 15:23:01.993 cid=59187ec729ac4047bb3be2741aa3981e  pipeline=start obs_host=localhost obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 15:23:01.996 cid=59187ec729ac4047bb3be2741aa3981e  stage=obs_save start in_process=true host=localhost port=4455
+2026-04-22 15:23:02.096 cid=59187ec729ac4047bb3be2741aa3981e  stage=obs_save ok
+2026-04-22 15:23:02.102 cid=59187ec729ac4047bb3be2741aa3981e  stage=worker_trigger start uri=http://127.0.0.1:18765/replay?trigger=1776889381&request_id=59187ec729ac4047bb3be2741aa3981e&trigger_source=save_replay_and_trigger.ps1 timeout_sec=45 canonical_token_supplied=False
+2026-04-22 15:23:03.928 cid=59187ec729ac4047bb3be2741aa3981e  stage=worker_trigger http_status=200 body={"success": true, "selected_source_path": "C:\\ReplayTrove\\long_clips\\replay_ 2026-04-22T15-23-03.mkv", "incoming_path": "C:\\ReplayTrove\\clips\\2026-04-22T15-23-03.mp4", "detected_at": "2026-04-22T20:23:03.208098+00:00", "stability_confirmed": true, "failure_reason": null, "scoreboard_replay_path": "C:\\ReplayTrove\\INSTANTREPLAY.mkv", "processing_error": null, "source_deleted": true, "request_id": "59187ec729ac4047bb3be2741aa3981e", "correlation_id": "59187ec729ac4047bb3be2741aa3981e", "canonical_trust_category": "canonical_claim_untrusted", "canonical_trust_reason": "canonical_token_not_configured", "exit_code": 0}
+2026-04-22 15:23:03.940 cid=59187ec729ac4047bb3be2741aa3981e  stage=worker_trigger parsed_success=True parsed_failure_reason= parsed_exit_code=0 trust_category=canonical_claim_untrusted trust_reason=canonical_token_not_configured
+2026-04-22 15:23:03.948 cid=59187ec729ac4047bb3be2741aa3981e  stage=scoreboard_replay_on start script=C:\ReplayTrove\scripts\send_command.ps1
+2026-04-22 15:23:04.057 cid=59187ec729ac4047bb3be2741aa3981e  stage=scoreboard_replay_on exit_code=0
+2026-04-22 15:23:04.067 cid=59187ec729ac4047bb3be2741aa3981e  pipeline=success
+2026-04-22 15:26:28.484 cid=3cb695f212c64aa28028b893c2183b6d  config_sources obs_host=unified obs_port=unified obs_password=unified worker_host=unified worker_port=unified worker_timeout=unified canonical_token=default precedence=param>unified>env>default unified_found=True
+2026-04-22 15:26:28.493 cid=3cb695f212c64aa28028b893c2183b6d  config_fallback_warning replay_canonical_token_missing requests will be classified untrusted
+2026-04-22 15:26:28.495 cid=3cb695f212c64aa28028b893c2183b6d  pipeline=start obs_host=localhost obs_port=4455 worker_host=127.0.0.1 worker_port=18765
+2026-04-22 15:26:28.499 cid=3cb695f212c64aa28028b893c2183b6d  stage=obs_save start in_process=true host=localhost port=4455
+2026-04-22 15:26:28.628 cid=3cb695f212c64aa28028b893c2183b6d  stage=obs_save ok
+2026-04-22 15:26:28.636 cid=3cb695f212c64aa28028b893c2183b6d  stage=worker_trigger start uri=http://127.0.0.1:18765/replay?trigger=1776889588&request_id=3cb695f212c64aa28028b893c2183b6d&trigger_source=save_replay_and_trigger.ps1 timeout_sec=45 canonical_token_supplied=False
+2026-04-22 15:26:30.511 cid=3cb695f212c64aa28028b893c2183b6d  stage=worker_trigger http_status=200 body={"success": true, "selected_source_path": "C:\\ReplayTrove\\long_clips\\replay_ 2026-04-22T15-26-29.mkv", "incoming_path": "C:\\ReplayTrove\\clips\\2026-04-22T15-26-29.mp4", "detected_at": "2026-04-22T20:26:29.748293+00:00", "stability_confirmed": true, "failure_reason": null, "scoreboard_replay_path": "C:\\ReplayTrove\\INSTANTREPLAY.mkv", "processing_error": null, "source_deleted": true, "request_id": "3cb695f212c64aa28028b893c2183b6d", "correlation_id": "3cb695f212c64aa28028b893c2183b6d", "canonical_trust_category": "canonical_claim_untrusted", "canonical_trust_reason": "canonical_token_not_configured", "exit_code": 0}
+2026-04-22 15:26:30.521 cid=3cb695f212c64aa28028b893c2183b6d  stage=worker_trigger parsed_success=True parsed_failure_reason= parsed_exit_code=0 trust_category=canonical_claim_untrusted trust_reason=canonical_token_not_configured
+2026-04-22 15:26:30.529 cid=3cb695f212c64aa28028b893c2183b6d  stage=scoreboard_replay_on start script=C:\ReplayTrove\scripts\send_command.ps1
+2026-04-22 15:26:30.666 cid=3cb695f212c64aa28028b893c2183b6d  stage=scoreboard_replay_on exit_code=0
+2026-04-22 15:26:30.668 cid=3cb695f212c64aa28028b893c2183b6d  pipeline=success

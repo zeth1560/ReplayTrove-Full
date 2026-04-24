@@ -148,12 +148,29 @@ class S3Uploader:
                 "etag": etag,
             }
 
-        return call_with_network_retry(
-            _upload_once,
-            operation=f"s3_upload:{self.label}:{object_key}",
-            base_seconds=self._net_base,
-            max_seconds=self._net_max,
-            jitter_frac=self._net_jitter,
-            max_rounds=self.upload_retries,
-            on_retry=logging_retry_hook(f"S3 upload {self.label}"),
-        )
+        try:
+            return call_with_network_retry(
+                _upload_once,
+                operation=f"s3_upload:{self.label}:{object_key}",
+                base_seconds=self._net_base,
+                max_seconds=self._net_max,
+                jitter_frac=self._net_jitter,
+                max_rounds=self.upload_retries,
+                on_retry=logging_retry_hook(f"S3 upload {self.label}"),
+            )
+        except Exception as exc:
+            logger.error(
+                "S3 upload failed",
+                extra={
+                    "rt_event": "upload_failed",
+                    "structured": {
+                        "target": self.label,
+                        "bucket": self.bucket,
+                        "key": object_key,
+                        "path": str(local_path),
+                        "error": str(exc)[:800],
+                        "error_class": type(exc).__name__,
+                    },
+                },
+            )
+            raise

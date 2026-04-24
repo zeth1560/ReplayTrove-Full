@@ -7,6 +7,7 @@ Values already set in the process environment are not overridden by .env.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -23,6 +24,80 @@ def load_dotenv_if_present() -> None:
     encoder_dir = Path(__file__).resolve().parent
     load_dotenv(encoder_dir / ".env")
     load_dotenv(Path.cwd() / ".env")
+
+
+def _unified_settings_path() -> Path:
+    encoder_dir = Path(__file__).resolve().parent
+    root = encoder_dir.parent
+    raw_path = os.environ.get("REPLAYTROVE_SETTINGS_FILE", "").strip()
+    return Path(raw_path) if raw_path else root / "config" / "settings.json"
+
+
+def _read_unified_settings_doc() -> dict | None:
+    try:
+        cfg_path = _unified_settings_path()
+        if not cfg_path.is_file():
+            return None
+        doc = json.loads(cfg_path.read_text(encoding="utf-8"))
+        return doc if isinstance(doc, dict) else None
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def _unified_ffmpeg_path_from_doc(doc: dict | None) -> str | None:
+    if not doc:
+        return None
+    paths = doc.get("obsFfmpegPaths")
+    if not isinstance(paths, dict):
+        return None
+    p = paths.get("ffmpegPath")
+    if p is None or not str(p).strip():
+        return None
+    return str(p).strip()
+
+
+def _sanitized_ffmpeg_executable_str(path_str: str | None) -> str | None:
+    """Return path if it is usable as ffmpeg; None if empty or clearly mpv (common mis-key into unified ffmpegPath)."""
+    if path_str is None:
+        return None
+    s = str(path_str).strip()
+    if not s:
+        return None
+    name = Path(s).name.lower()
+    if name in ("mpv.exe", "mpv"):
+        return None
+    return s
+
+
+def _unified_uvc_devices_from_doc(doc: dict | None) -> tuple[str | None, str | None]:
+    if not doc:
+        return None, None
+    enc = doc.get("encoder")
+    if not isinstance(enc, dict):
+        return None, None
+    v = enc.get("uvcVideoDevice")
+    a = enc.get("uvcAudioDevice")
+    vs = str(v).strip() if v is not None and str(v).strip() else None
+    au = str(a).strip() if a is not None and str(a).strip() else None
+    return vs, au
+
+
+def resolve_ffmpeg_path() -> Path:
+    """Resolve ffmpeg binary: unified ``obsFfmpegPaths.ffmpegPath``, else ``FFMPEG_PATH`` / default, else PATH."""
+    load_dotenv_if_present()
+    doc = _read_unified_settings_doc()
+    unified_ff = _sanitized_ffmpeg_executable_str(_unified_ffmpeg_path_from_doc(doc))
+    default_ff = r"C:\ffmpeg\bin\ffmpeg.exe"
+    if unified_ff:
+        ff = Path(unified_ff)
+    else:
+        env_ff = _sanitized_ffmpeg_executable_str(os.environ.get("FFMPEG_PATH"))
+        ff = Path(env_ff if env_ff else default_ff)
+    if not ff.exists():
+        w = shutil.which("ffmpeg")
+        if w:
+            ff = Path(w)
+    return ff
 
 
 def _opt(name: str, default: str) -> str:
@@ -65,7 +140,7 @@ class EncoderSettings:
     audio_bitrate_k: int
     long_clips_folder: Path
     long_clips_trigger: Path | None
-    encoder_log_file: Path
+    encoder_logs_root: Path
     long_record_min_bytes: int
     long_record_verify_stable_seconds: float
     long_output_width: int
@@ -119,12 +194,9 @@ def _encoder_ui_mode() -> str:
 
 
 def load_encoder_settings() -> EncoderSettings:
-    load_dotenv_if_present()
-    ff = Path(_opt("FFMPEG_PATH", r"C:\ffmpeg\bin\ffmpeg.exe"))
-    if not ff.exists():
-        w = shutil.which("ffmpeg")
-        if w:
-            ff = Path(w)
+    doc = _read_unified_settings_doc()
+    unified_vid, unified_aud = _unified_uvc_devices_from_doc(doc)
+    ff = resolve_ffmpeg_path()
 
     default_uvc_backend = "dshow" if sys.platform == "win32" else "v4l2"
     uvc_backend = _opt("UVC_CAPTURE_BACKEND", default_uvc_backend).lower()
@@ -136,14 +208,25 @@ def load_encoder_settings() -> EncoderSettings:
     log_dir = Path(_opt("ENCODER_LOG_DIR", r"C:\ReplayTrove\logs"))
     log_file = log_dir / "encoder_operator.log"
 
+    uvc_video = (
+        unified_vid
+        if unified_vid
+        else _opt("UVC_VIDEO_DEVICE", "USB3.0 HD Video Capture")
+    )
+    uvc_audio = (
+        unified_aud
+        if unified_aud
+        else _opt(
+            "UVC_AUDIO_DEVICE",
+            "Microphone (USB3.0 HD Audio Capture)",
+        )
+    )
+
     return EncoderSettings(
         ffmpeg_path=ff,
         uvc_capture_backend=uvc_backend,
-        uvc_video_device=_opt("UVC_VIDEO_DEVICE", "USB3.0 HD Video Capture"),
-        uvc_audio_device=_opt(
-            "UVC_AUDIO_DEVICE",
-            "Microphone (USB3.0 HD Audio Capture)",
-        ),
+        uvc_video_device=uvc_video,
+        uvc_audio_device=uvc_audio,
         uvc_rtbufsize=_opt("UVC_DSHOW_RTBUFSIZE", ""),
         uvc_dshow_video_size=_opt("UVC_DSHOW_VIDEO_SIZE", ""),
         uvc_dshow_framerate=_opt_int("UVC_DSHOW_FRAMERATE", 0, 0),
@@ -155,7 +238,7 @@ def load_encoder_settings() -> EncoderSettings:
         audio_bitrate_k=_opt_int("AUDIO_BITRATE_K", 192, 32),
         long_clips_folder=Path(_opt("LONG_CLIPS_FOLDER", r"C:\ReplayTrove\long_clips")),
         long_clips_trigger=Path(trig_lc) if trig_lc else None,
-        encoder_log_file=log_file,
+        encoder_logs_root=encoder_logs_root,
         long_record_min_bytes=_opt_int("LONG_RECORD_MIN_BYTES", 256 * 1024, 1024),
         long_record_verify_stable_seconds=_opt_float(
             "LONG_RECORD_VERIFY_STABLE_SECONDS", 3.0, 0.5

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import shutil
 import subprocess
 import time
 import ctypes
@@ -51,6 +52,27 @@ def resolve_obs_executable(settings: Settings) -> str | None:
         if os.path.isfile(candidate):
             return candidate
     return None
+
+
+def _remove_obs_shutdown_sentinel() -> None:
+    """Delete OBS crash/ungraceful-shutdown marker so startup does not block on Safe/Normal mode."""
+    if os.name != "nt":
+        return
+    appdata = os.environ.get("APPDATA", "").strip()
+    if not appdata:
+        return
+    path = Path(appdata) / "obs-studio" / ".sentinel"
+    if not path.exists():
+        return
+    try:
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+            _LOG.info("OBS shutdown sentinel removed (dir): %s", path)
+        else:
+            path.unlink()
+            _LOG.info("OBS shutdown sentinel removed (file): %s", path)
+    except OSError as e:
+        _LOG.warning("OBS shutdown sentinel remove failed %s: %s", path, e)
 
 
 def _taskkill_obs_processes() -> None:
@@ -486,6 +508,7 @@ def restart_obs_pipeline(settings: Settings) -> tuple[bool, str]:
         _LOG.warning("OBS graceful close timed out; forcing taskkill fallback")
         _taskkill_obs_processes()
     time.sleep(0.5)
+    _remove_obs_shutdown_sentinel()
     launch_args = _parse_launch_args(settings.obs_restart_launch_args)
     _LOG.info("OBS restart launch args: %s", launch_args)
 

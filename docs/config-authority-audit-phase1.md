@@ -1,82 +1,51 @@
 # ReplayTrove Config Authority Audit (Phase 1)
 
-This document captures current authority and fallback precedence for replay-critical settings.
+> **Operator note:** This document started as a Phase 1 drift audit. Runtime behavior has since converged on **unified `config/settings.json` first**, with environment overrides and compatibility bridges where noted. Use the **Current authority (operator summary)** section below as the practical source of truth; later sections retain audit history and residual-risk notes.
 
-## Precedence model (current)
+## Current authority (operator summary)
 
-- Worker runtime settings: `config/settings.json` (unified) -> env var -> code default
-- Scoreboard migrated settings: `config/settings.json` (unified) -> env var -> code default
-- Canonical replay script (`scripts/save_replay_and_trigger.ps1`): script param -> env var -> script default
-- Secrets remain env-driven (`OBS_WEBSOCKET_PASSWORD`, `REPLAY_CANONICAL_TOKEN`)
+- **Unified config:** `config/settings.json` drives worker replay HTTP (`worker.httpReplayTriggerHost`, `worker.httpReplayTriggerPort`, `worker.httpReplayTriggerTimeoutSec`), replay paths, scoreboard OBS (`scoreboard.obsWebsocketHost` / `Port` / `Password`), command bus root (`scoreboard.commandsRoot`), and related launcher fields. Control Center edits the same document.
+- **Env overrides:** Many keys still map to env vars (e.g. `REPLAY_TRIGGER_HTTP_*`, `OBS_WEBSOCKET_*`) for deployment flexibility; loaders log when values come from env vs unified.
+- **Secrets:** `REPLAY_CANONICAL_TOKEN` remains env-only for the canonical replay script and worker trust checks. OBS websocket password may live in unified JSON on appliance installs—**protect file permissions** on `config/settings.json` (and any secrets sidecar) like any file that can start encoders or touch production paths.
+- **Canonical replay script** (`scripts/save_replay_and_trigger.ps1`): resolves replay HTTP host/port/timeout and OBS targets **unified-first** with param/env fallbacks; startup logs show precedence.
+- **Scoreboard command bus:** Pending/processed paths derive from unified `scoreboard.commandsRoot`. If the legacy default tree differs, the runtime **still scans the legacy pending folder** as a compatibility bridge (not removed here).
+- **Stream Deck / shortcuts:** Any hardcoded replay HTTP port must match `worker.httpReplayTriggerPort` (default **18765**). See `worker/streamdeck_trigger_replay.bat`.
 
-## Authority map (focused settings)
+---
 
-- `worker.httpReplayTriggerHost` / `REPLAY_TRIGGER_HTTP_HOST`
-  - Authority: unified (`config/settings.json` -> `worker.httpReplayTriggerHost`) in worker runtime.
-  - Canonical script uses env/param today; logs env fallback warning.
-  - Drift risk: script host can diverge from worker host if env differs.
+## Precedence model (historical — still broadly true)
 
-- `worker.httpReplayTriggerPort` / `REPLAY_TRIGGER_HTTP_PORT`
-  - Authority: unified (`worker.httpReplayTriggerPort`) in worker runtime.
-  - Canonical script uses env/param today; logs env fallback warning.
-  - Drift risk: script port can diverge from worker listener if env differs.
+- Worker runtime settings: `config/settings.json` (unified) → env var → code default
+- Scoreboard migrated settings: same pattern
+- Canonical replay script: unified-first, then param → env → script default
+- Token: `REPLAY_CANONICAL_TOKEN` env only
 
-- `REPLAY_TRIGGER_HTTP_TIMEOUT_SEC`
-  - Authority: canonical script param/env/default (`45`).
-  - Not currently unified-managed.
-  - Drift risk: operator may assume Control Center governs this (it does not).
+## Authority map (historical detail)
 
-- `REPLAY_CANONICAL_TOKEN`
-  - Authority: env only (secret).
-  - Used by canonical script and worker replay HTTP trust checks.
-  - Empty/missing token is allowed in phase 1; explicitly logged as untrusted classification path.
+- `worker.httpReplayTriggerHost` / `REPLAY_TRIGGER_HTTP_HOST` — unified in worker; script unified-first.
+- `worker.httpReplayTriggerPort` / `REPLAY_TRIGGER_HTTP_PORT` — unified in worker; script unified-first.
+- `worker.httpReplayTriggerTimeoutSec` / `REPLAY_TRIGGER_HTTP_TIMEOUT_SEC` — unified field exists; script unified-first (verify logs if you rely on env-only overrides).
+- `REPLAY_CANONICAL_TOKEN` — env only; empty allowed with explicit “untrusted” logging path.
+- `scoreboard.obsWebsocket*` / `OBS_WEBSOCKET_*` — scoreboard loads unified first; env overrides logged.
+- Replay-related paths — unified first in adapters; env/default fallback retained.
+- Scoreboard command bus — `scoreboard.commandsRoot` is authoritative for primary pending/processed; legacy pending scan remains when paths diverge.
 
-- `OBS_WEBSOCKET_HOST` / `OBS_WEBSOCKET_PORT`
-  - Scoreboard authority: env/default in scoreboard settings (not unified-managed currently).
-  - Canonical script authority: param/env/default.
-  - Drift risk: scoreboard OBS target can diverge from script OBS target.
+## Phase-1 cleanup implemented (audit log)
 
-- `OBS_WEBSOCKET_PASSWORD`
-  - Authority: env/param (secret); intentionally not unified-managed.
-  - Canonical script and scoreboard read separately.
+- Source/fallback warnings for replay HTTP host/port in worker startup and standalone server mode.
+- Replay config env-fallback warnings in worker settings loader (`REPLAY_TRIGGER_HTTP_*`, `INSTANT_REPLAY_TRIGGER_FILE`).
+- Scoreboard OBS websocket env-source warnings.
+- Canonical script startup config-source logging (`param > env > default`), replay HTTP env warnings, missing-token warnings.
+- Scoreboard drift warning when unified `scoreboard.commandsRoot` implies a different tree than legacy constants (bridge still active).
 
-- Replay-related paths (`worker.instantReplaySource`, `worker.longClipsFolder`, `worker.instantReplayTriggerFile`, scoreboard replay asset paths)
-  - Authority: unified first in worker/scoreboard settings adapters.
-  - Env/default fallback retained for compatibility and logged.
+## Residual drift / confusion risks
 
-- Scoreboard command bus path
-  - Unified field exists: `scoreboard.commandsRoot`.
-  - Runtime currently still uses hardcoded constants in `scoreboard/scoreboard/app.py`.
-  - Phase-1 mitigation: runtime now logs drift warning if unified path implies a different pending folder.
-
-## Phase-1 cleanup implemented
-
-- Added explicit source/fallback warnings for replay HTTP host/port env fallback in worker startup and standalone server mode.
-- Added replay config env-fallback warning in worker settings loader for:
-  - `REPLAY_TRIGGER_HTTP_HOST`
-  - `REPLAY_TRIGGER_HTTP_PORT`
-  - `INSTANT_REPLAY_TRIGGER_FILE`
-- Added scoreboard OBS websocket env-source warning for:
-  - `OBS_WEBSOCKET_HOST`
-  - `OBS_WEBSOCKET_PORT`
-  - `OBS_WEBSOCKET_PASSWORD`
-- Added canonical script startup config-source logging with precedence:
-  - `param > env > default`
-  - warns when replay HTTP values come from env fallback
-  - warns when canonical token is missing
-- Added scoreboard runtime drift warning for `scoreboard.commandsRoot` vs hardcoded command pending path.
-
-## Remaining drift risks
-
-- Canonical script replay HTTP host/port/timeout are still not loaded from unified config directly.
-- Scoreboard command bus runtime path is still hardcoded despite unified `scoreboard.commandsRoot`.
-- Scoreboard OBS websocket host/port are still env/default based (not unified).
-- `REPLAY_TRIGGER_HTTP_TIMEOUT_SEC` has no unified equivalent yet.
+- **Legacy entrypoints** (e.g. VBS, `toggle_replay`, direct worker HTTP) can bypass the full canonical script path—operators should prefer `save_replay_and_trigger.ps1` or documented wrappers for consistent OBS/scoreboard behavior.
+- **Two pending folders** may be scanned if unified root ≠ legacy layout—intentional bridge; watch logs for `command_bus_legacy_bridge`.
+- **Protect unified JSON** if it contains OBS password or other sensitive operator data.
 
 ## Recommended follow-up cleanup order
 
-1. Add unified field for replay trigger timeout and migrate script to unified-first resolution.
-2. Move scoreboard command bus directories to unified-derived runtime paths (with fallback compatibility).
-3. Add unified scoreboard OBS websocket host/port fields (keep password in env only).
-4. Consolidate canonical replay script resolution through shared config loader module for PowerShell scripts.
-5. Add optional enforcement flag to reject non-trusted canonical claims once observability is stable.
+1. Optional: tighten documentation for all Companion/Stream Deck actions to a single canonical trigger story (HTTP port + script), without removing legacy bridges yet.
+2. When observability is stable, optional enforcement flag for non-trusted canonical claims.
+3. Longer-term: reduce duplicate env surface where unified + env duplicate the same key without clear operator docs.

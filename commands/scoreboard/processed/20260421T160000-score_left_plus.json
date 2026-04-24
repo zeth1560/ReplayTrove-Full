@@ -1,5 +1,0 @@
-{
-  "id": "test-001",
-  "action": "score_left_plus",
-  "args": { "amount": 2 }
-}

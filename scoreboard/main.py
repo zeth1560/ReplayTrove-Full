@@ -5,6 +5,11 @@ from __future__ import annotations
 import logging
 import sys
 import tkinter as tk
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from scoreboard.config.settings import load_settings
 from scoreboard.logging_config import configure_logging
@@ -28,6 +33,7 @@ def main() -> None:
     configure_logging(
         logging.DEBUG if settings.scoreboard_debug else logging.INFO,
         log_file=settings.scoreboard_log_file or None,
+        central_logs_root=Path(settings.central_logs_root),
     )
 
     validate_startup_critical(settings)

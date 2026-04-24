@@ -7,9 +7,14 @@ import random
 import signal
 import sys
 import threading
+import uuid
 import time
 from pathlib import Path
 from typing import Any
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from config import ConfigError, Settings, load_settings
 from connectivity import ConnectivityMonitor
@@ -134,6 +139,29 @@ def _replay_pipeline_structured(request_id: str | None, **kwargs: object) -> dic
     return out
 
 
+def _log_replay_completed(
+    correlation_id: str,
+    request_id: str | None,
+    *,
+    outcome: str,
+    exit_code: int,
+    **extra: object,
+) -> None:
+    logger.info(
+        "replay-processing: replay_completed",
+        extra={
+            "rt_event": "replay_completed",
+            "rt_correlation_id": correlation_id,
+            "structured": _replay_pipeline_structured(
+                request_id,
+                outcome=outcome,
+                exit_code=exit_code,
+                **extra,
+            ),
+        },
+    )
+
+
 def run_process_latest_replay_pipeline(
     settings: Settings,
     *,
@@ -155,27 +183,45 @@ def run_process_latest_replay_pipeline(
     When ``connectivity`` and related deps are omitted, builds fresh clients (CLI / standalone HTTP).
     When provided (embedded in running worker), reuses them.
     """
+    replay_correlation = (request_id or "").strip() or str(uuid.uuid4())
+    replay_done_logged = False
+
+    def _mark_replay_done(*, outcome: str, exit_code: int, **extra: object) -> None:
+        nonlocal replay_done_logged
+        if replay_done_logged:
+            return
+        replay_done_logged = True
+        _log_replay_completed(replay_correlation, request_id, outcome=outcome, exit_code=exit_code, **extra)
+
     logger.info(
         "replay-processing: pipeline starting",
         extra={
+            "rt_event": "replay_started",
+            "rt_correlation_id": replay_correlation,
             "structured": _replay_pipeline_structured(
                 request_id,
+                correlation_id=replay_correlation,
                 trigger=trigger_raw[:120],
                 timeout_seconds=timeout_seconds,
                 prefix=filename_prefix,
                 tolerance_seconds=tolerance_seconds,
-            )
+            ),
         },
     )
 
-    result = run_process_latest_replay_cli(
-        settings,
-        trigger_raw=trigger_raw,
-        timeout_seconds=timeout_seconds,
-        filename_prefix=filename_prefix,
-        tolerance_seconds=tolerance_seconds,
-        request_id=request_id,
-    )
+    try:
+        result = run_process_latest_replay_cli(
+            settings,
+            trigger_raw=trigger_raw,
+            timeout_seconds=timeout_seconds,
+            filename_prefix=filename_prefix,
+            tolerance_seconds=tolerance_seconds,
+            request_id=request_id,
+        )
+    except Exception:
+        logger.exception("replay-processing: replay-buffer stage raised")
+        _mark_replay_done(outcome="replay_buffer_exception", exit_code=1)
+        raise
 
     if not result.success:
         logger.warning(
@@ -186,6 +232,11 @@ def run_process_latest_replay_pipeline(
                     failure_reason=result.failure_reason,
                 )
             },
+        )
+        _mark_replay_done(
+            outcome="failed_buffer",
+            exit_code=1,
+            failure_reason=result.failure_reason,
         )
         return result, 1
 
@@ -268,6 +319,11 @@ def run_process_latest_replay_pipeline(
             processing_error=str(exc)[:500],
             source_deleted=result.source_deleted,
         )
+        _mark_replay_done(
+            outcome="failed_processing",
+            exit_code=1,
+            path=str(incoming),
+        )
         return failed, 1
 
     logger.info(
@@ -281,6 +337,14 @@ def run_process_latest_replay_pipeline(
                 source_deleted=result.source_deleted,
             )
         },
+    )
+    _mark_replay_done(
+        outcome="success",
+        exit_code=0,
+        selected_source_path=result.selected_source_path,
+        incoming_path=result.incoming_path,
+        scoreboard_replay_path=result.scoreboard_replay_path,
+        source_deleted=result.source_deleted,
     )
     return result, 0
 
@@ -385,6 +449,7 @@ def _ensure_directories(settings: Settings) -> None:
         settings.processed_folder,
         settings.failed_folder,
         settings.log_folder,
+        settings.job_db_path.parent,
     ]
     if settings.long_clips_folder is not None:
         folders.append(settings.long_clips_folder)
@@ -580,6 +645,16 @@ def main(argv: list[str] | None = None) -> int:
 
     job_queue = ClipJobQueue(settings)
     stop = threading.Event()
+
+    def _incident_engine_enabled() -> bool:
+        raw = os.environ.get("REPLAYTROVE_INCIDENT_ENGINE", "1").strip().lower()
+        return raw not in ("0", "false", "no", "off")
+
+    if _incident_engine_enabled():
+        from replaytrove_observability.incidents import start_incident_engine_background
+
+        start_incident_engine_background(settings.log_folder, stop=stop)
+
     replay_trigger_thread: threading.Thread | None = None
     replay_auto_thread: threading.Thread | None = None
 

@@ -8,7 +8,6 @@ rem OBS %APPDATA%\obs-studio\.sentinel cleanup is done in start_apps.ps1 (Remove
 rem --- Paths (override here if your install differs) ---
 set "REPLAYTROVE_WORKER_DIR=C:\ReplayTrove\worker"
 set "REPLAYTROVE_SCOREBOARD_DIR=C:\ReplayTrove\scoreboard"
-set "REPLAYTROVE_LOGS2DROPBOX_DIR=C:\ReplayTrove\logs2dropbox"
 set "REPLAYTROVE_ENCODER_DIR=C:\ReplayTrove\encoder"
 set "REPLAYTROVE_CLEANER_SCRIPT=C:\ReplayTrove\cleaner\cleaner-bee.ps1"
 set "REPLAYTROVE_OBS_DIR=C:\Program Files\obs-studio\bin\64bit"
@@ -31,7 +30,6 @@ rem Production uses pythonw.exe (no consoles). For visible Python errors use deb
 rem set "REPLAYTROVE_LAUNCHER_DEBUG=1"
 rem Optional per-app toggles (1=enabled, 0=disabled):
 rem set "REPLAYTROVE_ENABLE_WORKER=1"
-rem set "REPLAYTROVE_ENABLE_LOGS2DROPBOX=1"
 rem set "REPLAYTROVE_ENABLE_ENCODER=1"
 rem set "REPLAYTROVE_ENABLE_CLEANER=1"
 rem Cleaner ownership mode: task_scheduler (recommended) or launcher (legacy behavior).

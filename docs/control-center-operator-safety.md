@@ -2,6 +2,12 @@
 
 The Control Center is designed for local appliance operators. It favors safe defaults, clear warnings, and compatibility with legacy environment settings.
 
+## Opening Control Center on Windows (preferred)
+
+On a Windows appliance or dev machine with the repo installed, **double-click `launch_control_center.bat` at the repository root** (or run it from Explorer). It starts the Control Center API and Vite UI if they are not already listening, opens the UI in your default browser, and appends a trace to `state\control_center_launch.log`. You can still start services manually with `npm` from the repo root if you prefer; the batch file does not replace that workflow.
+
+Optional environment variables (before launch, or set system-wide): `REPLAYTROVE_ROOT` (repo path if the batch file is not in the repo root), `REPLAYTROVE_CONTROL_CENTER_API_PORT` (default `4311`, must match the UI’s API URL), and `REPLAYTROVE_CONTROL_CENTER_UI_PORT` (default `5173`).
+
 ## Safe/common settings
 
 These are commonly adjusted during normal operations:
@@ -81,3 +87,7 @@ Most secrets are intentionally excluded from editable unified config.
 Current exception: `scoreboard.obsWebsocketPassword` is operator-managed in Control Center for local appliance simplicity.
 
 Do not put cloud credentials or API keys into `config/settings.json`.
+
+## See also
+
+- **Replay buttons and HTTP ports:** `docs/operator-replay-trigger-runbook.md`

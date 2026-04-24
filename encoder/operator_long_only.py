@@ -24,6 +24,10 @@ from pathlib import Path
 from tkinter import messagebox, scrolledtext
 from typing import Any
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from app_logging import setup_encoder_logging
 from encoder_window_diagnostics import (
     apply_win32_noninteractive_host,
@@ -693,7 +697,7 @@ class LongOnlyApp:
         self._last_tick_wm_state: str | None = None
 
         setup_encoder_logging(
-            settings.encoder_log_file,
+            settings.encoder_logs_root,
             ui_queue=None if self._ui_hidden else self.log_q,
         )
         self.events = FlightJsonlEmitter(
@@ -1645,6 +1649,12 @@ class LongOnlyApp:
                         "HEALTH_DEGRADED",
                         level="WARNING",
                         message="Recording appears stalled.",
+                        data=hc_data,
+                    )
+                    self.events.emit(
+                        "encoding_overload_detected",
+                        level="WARNING",
+                        message="Encoder overload / stall heuristic (recording output not growing).",
                         data=hc_data,
                     )
             self._last_health_check_mono = now

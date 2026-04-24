@@ -9,15 +9,31 @@ import sys
 from pathlib import Path
 
 from scoreboard.config.settings import Settings, SUPPORTED_IMAGE_EXTENSIONS, summarize_settings
+from scoreboard.config.unified_adapter import load_scoreboard_unified_snapshot
 from scoreboard.obs_restart import resolve_obs_executable
 from scoreboard.version import __version__
 
 _LOG = logging.getLogger(__name__)
 
+
+def _sibling_mpv_next_to_configured_ffmpeg() -> list[str]:
+    """If unified config lists ffmpeg, try mpv.exe in the same directory (common portable layout)."""
+    try:
+        snap = load_scoreboard_unified_snapshot()
+        raw = snap.obsffmpeg.get("ffmpegPath")
+        if not isinstance(raw, str) or not raw.strip():
+            return []
+        parent = Path(raw.strip()).expanduser().resolve().parent
+        return [str(parent / "mpv.exe")]
+    except OSError:
+        return []
+
+
 def _mpv_candidates(settings: Settings) -> list[str]:
     candidates: list[str] = []
     if settings.mpv_path:
         candidates.append(settings.mpv_path)
+    candidates.extend(_sibling_mpv_next_to_configured_ffmpeg())
     discovered = shutil.which("mpv")
     if discovered:
         candidates.append(discovered)
@@ -89,9 +105,17 @@ def validate_startup_critical(settings: Settings) -> None:
             )
         mpv = resolve_mpv_executable(settings)
         if mpv is None:
+            hint = (
+                f" Configured MPV path is missing or wrong: {settings.mpv_path!r}."
+                if settings.mpv_path
+                else ""
+            )
             errors.append(
-                "mpv executable not found but REPLAY_ENABLED=1 "
-                "(install mpv, set MPV_PATH, or set REPLAY_ENABLED=0)"
+                "mpv executable not found but REPLAY_ENABLED=1."
+                f"{hint} Install mpv (e.g. winget install mpv.net), set obsFfmpegPaths.mpvPath in "
+                "config/settings.json or MPV_PATH in scoreboard/.env, or place mpv.exe next to "
+                "your ffmpeg.exe if you use a portable tools folder. Alternatively set "
+                "REPLAY_ENABLED=0 for scoreboard-only mode."
             )
 
     if settings.slideshow_enabled:

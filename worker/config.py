@@ -425,8 +425,9 @@ def load_settings(env_file: Path | None = None) -> Settings:
         )
     )
     logs = Path(_optional("LOG_FOLDER", f"{replaytrove_root}\\logs"))
+    data_dir = Path(_optional("REPLAYTROVE_DATA_DIR", f"{replaytrove_root}\\data"))
     job_db = Path(
-        _optional("WORKER_JOB_DB", str(logs / "replaytrove_jobs.sqlite"))
+        _optional("WORKER_JOB_DB", str(data_dir / "replaytrove_jobs.sqlite"))
     )
 
     ffmpeg = Path(

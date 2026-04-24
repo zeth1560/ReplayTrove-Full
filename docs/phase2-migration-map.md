@@ -64,7 +64,6 @@ Resolution order for migrated settings:
 |---|---|---|---|---|
 | `REPLAYTROVE_*_DIR` / defaults | `launcher.*Dir` fields + `general.replayTroveRoot` | migrated | env then root default | yes |
 | `REPLAYTROVE_ENABLE_WORKER` | `launcher.enableWorker` | migrated | env then default | yes |
-| `REPLAYTROVE_ENABLE_LOGS2DROPBOX` | `launcher.enableLogs2Dropbox` | migrated | env then default | yes |
 | `REPLAYTROVE_ENABLE_ENCODER` | `launcher.enableEncoder` | migrated | env then default | yes |
 | `REPLAYTROVE_ENABLE_CLEANER` | `launcher.enableCleaner` | migrated | env then default | yes |
 | `REPLAYTROVE_ENABLE_OBS` | `launcher.enableObs` | migrated | env then default | yes |

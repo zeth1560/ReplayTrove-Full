@@ -28,6 +28,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from replaytrove_logging.setup import setup_component_logging
 from settings import load_dotenv_if_present
 from subprocess_win import no_console_creationflags
 
@@ -152,16 +157,17 @@ def main() -> None:
         "on",
     )
 
-    log_dir = Path(os.environ.get("ENCODER_LOG_DIR", r"C:\ReplayTrove\logs"))
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "encoder_watchdog.log"
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[
-            logging.FileHandler(log_path, encoding="utf-8"),
-            logging.StreamHandler(sys.stdout),
-        ],
+    log_root = Path(os.environ.get("ENCODER_LOG_DIR", r"C:\ReplayTrove\logs"))
+    log_root.mkdir(parents=True, exist_ok=True)
+    setup_component_logging(
+        logs_root=log_root,
+        service="encoder_watchdog",
+        console_level=logging.INFO,
+        file_level=logging.DEBUG,
+        attach_to_root=False,
+        logger_name="replaytrove.encoder.watchdog",
+        clear_existing_handlers=True,
+        enable_system_heartbeat=False,
     )
     log = logging.getLogger("replaytrove.encoder.watchdog")
 

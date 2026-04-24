@@ -70,7 +70,7 @@
     "launcherStatusJsonPath": "C:\\ReplayTrove\\launcher\\scoreboard_status.json",
     "obsWebsocketHost": "localhost",
     "obsWebsocketPort": 4455,
-    "obsWebsocketPassword": "",
+    "obsWebsocketPassword": "MonkeyButt",
     "obsStatusIndicatorEnabled": true,
     "obsStatusPollIntervalMs": 4000,
     "obsStatusRequireMainOutputIdle": false
@@ -78,12 +78,10 @@
   "launcher": {
     "workerDir": "C:\\ReplayTrove\\worker",
     "scoreboardDir": "C:\\ReplayTrove\\scoreboard",
-    "logs2DropboxDir": "C:\\ReplayTrove\\logs2dropbox",
     "encoderDir": "C:\\ReplayTrove\\encoder",
     "cleanerScript": "C:\\ReplayTrove\\cleaner\\cleaner-bee.ps1",
     "obsDir": "C:\\Program Files\\obs-studio\\bin\\64bit",
     "enableWorker": true,
-    "enableLogs2Dropbox": true,
     "enableEncoder": true,
     "enableScoreboard": true,
     "enableCleaner": true,
@@ -121,7 +119,11 @@
   "obsFfmpegPaths": {
     "obsExecutable": "C:\\Program Files\\obs-studio\\bin\\64bit\\obs64.exe",
     "ffmpegPath": "C:\\ffmpeg\\bin\\ffmpeg.exe",
-    "mpvPath": "C:\\Program Files\\mpv\\mpv.exe"
+    "mpvPath": "C:\\ReplayTrove\\mpv\\mpv.exe"
+  },
+  "encoder": {
+    "uvcVideoDevice": "CyberTrack H7",
+    "uvcAudioDevice": "Microphone (CyberTrack H7)"
   },
   "storage": {
     "s3PreviewPrefix": "previews",

@@ -1,4 +1,16 @@
 #Requires -Version 5.1
+<#
+.SYNOPSIS
+  Drop a JSON command file into the scoreboard or encoder command-bus pending folder.
+
+.DESCRIPTION
+  Resolves the command bus root the same way as the scoreboard: unified config
+  scoreboard.commandsRoot first, then COMMANDS_ROOT env, then C:\ReplayTrove\commands.
+  Uses REPLAYTROVE_SETTINGS_FILE or config\settings.json next to the repo root.
+
+  For replay ingest (OBS + worker), use scripts/save_replay_and_trigger.ps1 — see
+  docs/operator-replay-trigger-runbook.md. replay_on/replay_off here are scoreboard-only.
+#>
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet('scoreboard', 'encoder')]
@@ -23,7 +35,49 @@ if ([string]::IsNullOrWhiteSpace($Action)) {
     Write-Fail 'Action must not be empty.'
 }
 
-$commandRoot = 'C:\ReplayTrove\commands'
+$defaultCommandsRoot = 'C:\ReplayTrove\commands'
+$repoRoot = Split-Path -Parent $PSScriptRoot
+
+function Resolve-CommandsRoot {
+    param(
+        [string] $RepoRoot,
+        [string] $DefaultRoot
+    )
+    $cfgPath = if (-not [string]::IsNullOrWhiteSpace($env:REPLAYTROVE_SETTINGS_FILE)) {
+        $env:REPLAYTROVE_SETTINGS_FILE
+    } else {
+        Join-Path $RepoRoot 'config\settings.json'
+    }
+    if (Test-Path -LiteralPath $cfgPath) {
+        try {
+            $j = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+            $cr = $j.scoreboard.commandsRoot
+            if ($null -ne $cr -and $cr -is [string] -and -not [string]::IsNullOrWhiteSpace($cr)) {
+                return @{ Root = $cr.Trim().Trim('"').Trim("'"); Source = 'unified' }
+            }
+        } catch {
+            # fall through to env/default
+        }
+    }
+    $e = [Environment]::GetEnvironmentVariable('COMMANDS_ROOT')
+    if (-not [string]::IsNullOrWhiteSpace($e)) {
+        return @{ Root = $e.Trim().Trim('"').Trim("'"); Source = 'env' }
+    }
+    return @{ Root = $DefaultRoot; Source = 'default' }
+}
+
+$resolvedRoot = Resolve-CommandsRoot -RepoRoot $repoRoot -DefaultRoot $defaultCommandsRoot
+$commandRoot = $resolvedRoot.Root
+$commandRootSource = $resolvedRoot.Source
+if (-not [System.IO.Path]::IsPathRooted($commandRoot)) {
+    $commandRoot = Join-Path $repoRoot $commandRoot
+}
+try {
+    $commandRoot = [System.IO.Path]::GetFullPath($commandRoot)
+} catch {
+    Write-Fail ("Invalid command bus root path '{0}': {1}" -f $commandRoot, $_.Exception.Message)
+}
+
 $pendingDir = Join-Path -Path $commandRoot -ChildPath $Target | Join-Path -ChildPath 'pending'
 
 try {
@@ -100,4 +154,5 @@ try {
     Write-Fail ("Could not rename '{0}' to '{1}': {2}" -f $tmpPath, $jsonName, $_.Exception.Message)
 }
 
-Write-Host ("command_sent ok path={0}" -f $finalPath)
+Write-Host ("command_sent ok path={0} command_root={1} command_root_source={2}" -f $finalPath, $commandRoot, $commandRootSource)
+exit 0

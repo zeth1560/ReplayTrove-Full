@@ -1,12 +1,18 @@
-"""Rotating file logging + optional Tk queue handler for the encoder operator."""
+"""Daily JSONL file logging + optional Tk queue handler for the encoder operator."""
 
 from __future__ import annotations
 
 import logging
 import queue
+import sys
 from datetime import datetime, timezone
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from replaytrove_logging.setup import setup_component_logging
 
 
 class TkQueueLogHandler(logging.Handler):
@@ -25,52 +31,35 @@ class TkQueueLogHandler(logging.Handler):
 
 
 def setup_encoder_logging(
-    log_file: Path,
+    logs_root: Path,
     *,
     ui_queue: queue.Queue[str] | None = None,
-    max_bytes: int = 5 * 1024 * 1024,
-    backup_count: int = 7,
 ) -> logging.Logger:
-    log_file.parent.mkdir(parents=True, exist_ok=True)
+    """
+    Configure ``replaytrove.encoder`` tree: stderr + ``logs/encoder/encoder-YYYY-MM-DD.jsonl``.
+    """
+    setup_component_logging(
+        logs_root=Path(logs_root),
+        service="encoder",
+        console_level=logging.DEBUG,
+        file_level=logging.DEBUG,
+        attach_to_root=False,
+        logger_name="replaytrove.encoder",
+        clear_existing_handlers=True,
+        enable_system_heartbeat=False,
+    )
     root = logging.getLogger("replaytrove.encoder")
     root.setLevel(logging.DEBUG)
-    root.handlers.clear()
-
-    fmt = logging.Formatter(
-        "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    fh = RotatingFileHandler(
-        log_file,
-        maxBytes=max_bytes,
-        backupCount=backup_count,
-        encoding="utf-8",
-    )
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(fmt)
-    root.addHandler(fh)
-
-    json_logger = logging.getLogger("replaytrove.encoder.jsonl")
-    json_logger.setLevel(logging.INFO)
-    json_logger.handlers.clear()
-    json_logger.propagate = False
-
-    json_file = log_file.with_suffix(".jsonl")
-    jh = RotatingFileHandler(
-        json_file,
-        maxBytes=max_bytes,
-        backupCount=backup_count,
-        encoding="utf-8",
-    )
-    jh.setLevel(logging.INFO)
-    jh.setFormatter(logging.Formatter("%(message)s"))
-    json_logger.addHandler(jh)
 
     if ui_queue is not None:
         qh = TkQueueLogHandler(ui_queue)
         qh.setLevel(logging.INFO)
-        qh.setFormatter(fmt)
+        qh.setFormatter(
+            logging.Formatter(
+                "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
         root.addHandler(qh)
 
     return root

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -16,7 +17,6 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", ".
 const SETTINGS_PATH = process.env.REPLAYTROVE_SETTINGS_FILE
   ? path.resolve(process.env.REPLAYTROVE_SETTINGS_FILE)
   : path.resolve(ROOT, "config", "settings.json");
-const SCOREBOARD_PENDING_DIR = path.resolve(ROOT, "commands", "scoreboard", "pending");
 const SCOREBOARD_SAFE_RELOAD_STATUS_PATH = path.resolve(
   ROOT,
   "scoreboard",
@@ -38,6 +38,39 @@ const LAUNCHER_SUPERVISION_STATUS_PATH = path.resolve(
   "launcher",
   "supervision_status.json",
 );
+const LAUNCHER_SUPERVISION_DESIRED_STATE_PATH = path.resolve(
+  ROOT,
+  "launcher",
+  "supervision_desired_state.json",
+);
+
+const SUPERVISION_MANAGED_COMPONENTS = [
+  "worker",
+  "scoreboard",
+  "obs",
+  "encoder_watchdog",
+];
+
+/** Path only: strips ?query, #hash, trailing slash; handles absolute request-URIs some clients send. */
+function requestPathname(url) {
+  const raw = typeof url === "string" && url.length > 0 ? url : "/";
+  let pathPart = raw;
+  if (!raw.startsWith("/")) {
+    try {
+      pathPart = new URL(raw).pathname || "/";
+    } catch {
+      const q0 = raw.indexOf("?");
+      pathPart = q0 === -1 ? raw : raw.slice(0, q0);
+    }
+  } else {
+    const q = raw.indexOf("?");
+    pathPart = q === -1 ? raw : raw.slice(0, q);
+  }
+  const h = pathPart.indexOf("#");
+  if (h !== -1) pathPart = pathPart.slice(0, h);
+  if (pathPart.length > 1 && pathPart.endsWith("/")) pathPart = pathPart.slice(0, -1);
+  return pathPart || "/";
+}
 
 function sendJson(res, status, payload) {
   res.writeHead(status, {
@@ -213,6 +246,40 @@ function resolveSettingInt(document, unifiedPath, envName, fallback, minimum = 1
   return { value: fallback, source: "default" };
 }
 
+/** Install root for resolving relative paths in unified config (matches appliance layout). */
+function resolveReplayTroveBase(configDoc) {
+  const raw = configDoc?.general?.replayTroveRoot;
+  if (typeof raw === "string" && raw.trim() !== "") {
+    const t = raw.trim();
+    if (path.isAbsolute(t)) {
+      return path.resolve(t);
+    }
+    return path.resolve(ROOT, t);
+  }
+  return ROOT;
+}
+
+/**
+ * Same precedence as send_command.ps1 / scoreboard: unified scoreboard.commandsRoot,
+ * then COMMANDS_ROOT env, then repo commands tree. Relative values join replayTroveRoot (or ROOT).
+ */
+function resolveCommandsRootAbsolute(configDoc) {
+  const resolved = resolveSettingString(
+    configDoc,
+    "scoreboard.commandsRoot",
+    "COMMANDS_ROOT",
+    LEGACY_COMMANDS_ROOT,
+  );
+  let raw = String(resolved.value || "").trim();
+  if (!raw) {
+    raw = LEGACY_COMMANDS_ROOT;
+  }
+  const absoluteRoot = path.isAbsolute(raw)
+    ? path.resolve(raw)
+    : path.resolve(resolveReplayTroveBase(configDoc), raw);
+  return { absoluteRoot, source: resolved.source };
+}
+
 function parseReplayPipelineLog() {
   if (!fs.existsSync(REPLAY_PIPELINE_LOG_PATH)) {
     return {
@@ -266,8 +333,189 @@ function parseIsoDate(value) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+function humanizeAgeSeconds(ageSec) {
+  if (ageSec == null || !Number.isFinite(ageSec)) return null;
+  if (ageSec < 60) return `${Math.round(ageSec)}s`;
+  if (ageSec < 3600) return `${Math.round(ageSec / 60)}m`;
+  if (ageSec < 86400) return `${(ageSec / 3600).toFixed(1)}h`;
+  return `${(ageSec / 86400).toFixed(1)}d`;
+}
+
+/**
+ * @param {ReturnType<typeof parseLauncherSupervisionState>} supervision
+ * @param {object} configDoc
+ */
+function enrichLauncherSupervisionFreshness(supervision, configDoc) {
+  const pollObj = resolveSettingInt(
+    configDoc,
+    "launcher.supervisionPollSec",
+    "REPLAYTROVE_SUPERVISION_POLL_SEC",
+    5,
+    1,
+  );
+  const poll = pollObj.value;
+  const supervisionTickStaleSec = Math.max(25, poll * 4);
+  const desiredStateInfoStaleSec = Math.max(120, poll * 24);
+
+  /** @type {"fresh"|"stale"|"unavailable"|"corrupt"|"unknown"} */
+  let leaseFresh = "unavailable";
+  let leaseAgeSec = null;
+  const leaseTimeout =
+    supervision.owner?.leaseTimeoutSec != null && Number.isFinite(supervision.owner.leaseTimeoutSec)
+      ? supervision.owner.leaseTimeoutSec
+      : 20;
+  const leaseState = supervision.owner?.state;
+  if (leaseState === "corrupt") {
+    leaseFresh = "corrupt";
+  } else if (!fs.existsSync(LAUNCHER_OWNER_LEASE_PATH)) {
+    leaseFresh = "unavailable";
+  } else {
+    const leaseDt = parseIsoDate(supervision.owner?.updatedAt);
+    if (!leaseDt) {
+      leaseFresh = "unknown";
+    } else {
+      leaseAgeSec = Math.max(0, (Date.now() - leaseDt.getTime()) / 1000);
+      leaseFresh = leaseAgeSec <= leaseTimeout ? "fresh" : "stale";
+    }
+  }
+
+  /** @type {"fresh"|"stale"|"unavailable"|"corrupt"|"unknown"} */
+  let statusFresh = "unavailable";
+  let statusAgeSec = null;
+  if (supervision.supervisionStatusArtifact === "corrupt") {
+    statusFresh = "corrupt";
+  } else if (supervision.supervisionStatusArtifact === "missing") {
+    statusFresh = "unavailable";
+  } else {
+    const snapDt = parseIsoDate(supervision.snapshotTimestamp);
+    if (!snapDt) {
+      statusFresh = "unknown";
+    } else {
+      statusAgeSec = Math.max(0, (Date.now() - snapDt.getTime()) / 1000);
+      statusFresh = statusAgeSec <= supervisionTickStaleSec ? "fresh" : "stale";
+    }
+  }
+
+  const dp = supervision.desiredStatePersisted;
+  /** @type {"fresh"|"stale"|"unavailable"|"corrupt"|"unknown"} */
+  let desiredFresh = "unavailable";
+  let desiredAgeSec = null;
+  if (dp.fileState === "corrupt") {
+    desiredFresh = "corrupt";
+  } else if (dp.fileState === "missing") {
+    desiredFresh = "unavailable";
+  } else {
+    const dDt = parseIsoDate(dp.updatedAt);
+    if (!dDt) {
+      desiredFresh = "unknown";
+    } else {
+      desiredAgeSec = Math.max(0, (Date.now() - dDt.getTime()) / 1000);
+      desiredFresh = desiredAgeSec <= desiredStateInfoStaleSec ? "fresh" : "stale";
+    }
+  }
+
+  const artifactFreshness = {
+    ownerLease: {
+      state: leaseFresh,
+      ageSeconds: leaseAgeSec != null ? Math.round(leaseAgeSec * 10) / 10 : null,
+      thresholdSeconds:
+        leaseFresh === "corrupt" || leaseFresh === "unavailable" ? null : leaseTimeout,
+      humanAge: humanizeAgeSeconds(leaseAgeSec),
+      basis: "updated_at vs lease_timeout_sec",
+    },
+    supervisionStatus: {
+      state: statusFresh,
+      ageSeconds: statusAgeSec != null ? Math.round(statusAgeSec * 10) / 10 : null,
+      thresholdSeconds:
+        statusFresh === "corrupt" || statusFresh === "unavailable" ? null : supervisionTickStaleSec,
+      humanAge: humanizeAgeSeconds(statusAgeSec),
+      basis: `snapshot timestamp vs max(25, supervisionPollSec*4); poll_sec=${poll} (${pollObj.source})`,
+    },
+    desiredState: {
+      state: desiredFresh,
+      ageSeconds: desiredAgeSec != null ? Math.round(desiredAgeSec * 10) / 10 : null,
+      thresholdSeconds:
+        desiredFresh === "corrupt" || desiredFresh === "unavailable"
+          ? null
+          : desiredStateInfoStaleSec,
+      humanAge: humanizeAgeSeconds(desiredAgeSec),
+      basis: `updated_at vs max(120, supervisionPollSec*24); poll_sec=${poll}`,
+    },
+  };
+
+  const managedComponents = supervision.managedComponents.map((row) => {
+    let liveRowFreshness = /** @type {"fresh"|"stale"|"unknown"|"unavailable"} */ ("unknown");
+    if (statusFresh === "corrupt" || statusFresh === "unavailable") {
+      liveRowFreshness = "unavailable";
+    } else if (statusFresh === "unknown") {
+      liveRowFreshness = "unknown";
+    } else if (statusFresh === "stale") {
+      liveRowFreshness = "stale";
+    } else {
+      const obsDt = parseIsoDate(row.lastObservedAt);
+      if (!obsDt) {
+        liveRowFreshness = "unknown";
+      } else {
+        const rowAge = Math.max(0, (Date.now() - obsDt.getTime()) / 1000);
+        liveRowFreshness = rowAge <= supervisionTickStaleSec ? "fresh" : "stale";
+      }
+    }
+    return { ...row, liveRowFreshness };
+  });
+
+  return {
+    ...supervision,
+    managedComponents,
+    artifactFreshness,
+  };
+}
+
+function parseSupervisionDesiredStatePersisted() {
+  const out = {
+    fileRelative: "launcher/supervision_desired_state.json",
+    fileState: /** @type {"missing" | "corrupt" | "available"} */ ("missing"),
+    updatedAt: /** @type {string | null} */ (null),
+    updateReason: /** @type {string | null} */ (null),
+    schemaVersion: /** @type {number | null} */ (null),
+    components: /** @type {Record<string, "running" | "stopped" | null>} */ ({}),
+  };
+  for (const name of SUPERVISION_MANAGED_COMPONENTS) {
+    out.components[name] = null;
+  }
+  if (!fs.existsSync(LAUNCHER_SUPERVISION_DESIRED_STATE_PATH)) {
+    return out;
+  }
+  try {
+    const raw = fs.readFileSync(LAUNCHER_SUPERVISION_DESIRED_STATE_PATH, "utf8");
+    const j = JSON.parse(raw);
+    out.fileState = "available";
+    out.updatedAt = typeof j.updated_at === "string" ? j.updated_at : null;
+    out.updateReason = typeof j.update_reason === "string" ? j.update_reason : null;
+    out.schemaVersion = Number.isFinite(Number(j.schema_version)) ? Number(j.schema_version) : null;
+    const blob =
+      j && typeof j === "object" && j.components && typeof j.components === "object"
+        ? j.components
+        : j;
+    for (const name of SUPERVISION_MANAGED_COMPONENTS) {
+      const v = blob && typeof blob === "object" ? blob[name] : undefined;
+      if (v === "running" || v === "stopped") {
+        out.components[name] = v;
+      } else {
+        out.components[name] = null;
+      }
+    }
+  } catch {
+    out.fileState = "corrupt";
+    for (const name of SUPERVISION_MANAGED_COMPONENTS) {
+      out.components[name] = null;
+    }
+  }
+  return out;
+}
+
 function parseLauncherSupervisionState() {
   let ownerLease = null;
+  /** @type {"active"|"graceful_shutdown"|"stale"|"unavailable"|"corrupt"} */
   let ownerLeaseState = "unavailable";
   if (fs.existsSync(LAUNCHER_OWNER_LEASE_PATH)) {
     try {
@@ -289,18 +537,22 @@ function parseLauncherSupervisionState() {
         ownerLeaseState = "stale";
       }
     } catch {
-      ownerLeaseState = "unavailable";
+      ownerLeaseState = "corrupt";
     }
   }
 
   let supervisionSnapshot = null;
+  /** @type {"missing"|"corrupt"|"available"} */
+  let supervisionStatusArtifact = "missing";
   if (fs.existsSync(LAUNCHER_SUPERVISION_STATUS_PATH)) {
     try {
       supervisionSnapshot = JSON.parse(
         fs.readFileSync(LAUNCHER_SUPERVISION_STATUS_PATH, "utf8"),
       );
+      supervisionStatusArtifact = "available";
     } catch {
       supervisionSnapshot = null;
+      supervisionStatusArtifact = "corrupt";
     }
   }
 
@@ -314,6 +566,14 @@ function parseLauncherSupervisionState() {
       : {};
   for (const [name, info] of Object.entries(rawComponents)) {
     components[name] = {
+      desiredStateLive:
+        info && typeof info === "object" && typeof info.desired_state === "string"
+          ? info.desired_state
+          : null,
+      lastObservedAt:
+        info && typeof info === "object" && typeof info.last_observed_at === "string"
+          ? info.last_observed_at
+          : null,
       lastClassification:
         info && typeof info === "object" && typeof info.last_classification === "string"
           ? info.last_classification
@@ -330,11 +590,38 @@ function parseLauncherSupervisionState() {
         info && typeof info === "object" && typeof info.last_restart_reason === "string"
           ? info.last_restart_reason
           : null,
+      consecutiveUnhealthy:
+        info && typeof info === "object" && Number.isFinite(Number(info.consecutive_unhealthy))
+          ? Number(info.consecutive_unhealthy)
+          : null,
     };
   }
 
+  const desiredStatePersisted = parseSupervisionDesiredStatePersisted();
+  const managedComponents = SUPERVISION_MANAGED_COMPONENTS.map((name) => {
+    const info = components[name] || {};
+    const persisted = desiredStatePersisted.components[name];
+    return {
+      name,
+      desiredPersisted:
+        persisted === "running" || persisted === "stopped" ? persisted : "unknown",
+      desiredLive:
+        info.desiredStateLive === "running" || info.desiredStateLive === "stopped"
+          ? info.desiredStateLive
+          : null,
+      lastClassification: info.lastClassification ?? null,
+      lastReason: info.lastReason ?? null,
+      lastRestartAt: info.lastRestartAt ?? null,
+      lastRestartReason: info.lastRestartReason ?? null,
+      lastObservedAt: info.lastObservedAt ?? null,
+      consecutiveUnhealthy: info.consecutiveUnhealthy ?? null,
+    };
+  });
+
   return {
+    supervisionStatusArtifact,
     owner: {
+      leaseFileRelative: "launcher/supervision_owner_lease.json",
       state: ownerLeaseState,
       active: ownerLeaseState === "active",
       ownerId:
@@ -356,6 +643,9 @@ function parseLauncherSupervisionState() {
       supervisionSnapshot && typeof supervisionSnapshot.timestamp === "string"
         ? supervisionSnapshot.timestamp
         : null,
+    supervisionStatusFileRelative: "launcher/supervision_status.json",
+    desiredStatePersisted,
+    managedComponents,
     components,
   };
 }
@@ -427,17 +717,19 @@ async function buildSystemStatus() {
     obsPasswordSource === "unified" ||
     obsPasswordSource === "env";
 
-  const commandRoot = resolveSettingString(
-    configDoc,
-    "scoreboard.commandsRoot",
-    "COMMANDS_ROOT",
-    LEGACY_COMMANDS_ROOT,
-  );
+  const commandsRootResolved = resolveCommandsRootAbsolute(configDoc);
+  const commandRoot = {
+    value: commandsRootResolved.absoluteRoot,
+    source: commandsRootResolved.source,
+  };
   const commandRootDivergesFromLegacy =
     normalizePathCaseInsensitive(commandRoot.value) !==
     normalizePathCaseInsensitive(LEGACY_COMMANDS_ROOT);
   const legacyBridgeActive = commandRootDivergesFromLegacy;
-  const launcherSupervision = parseLauncherSupervisionState();
+  const launcherSupervision = enrichLauncherSupervisionFreshness(
+    parseLauncherSupervisionState(),
+    configDoc,
+  );
 
   return {
     replayReadiness: {
@@ -472,16 +764,95 @@ async function buildSystemStatus() {
   };
 }
 
+function looksLikeMpvExecutablePath(p) {
+  if (typeof p !== "string" || !p.trim()) return false;
+  const norm = p.trim().replace(/\\/g, "/").toLowerCase();
+  return norm.endsWith("/mpv.exe") || norm.endsWith("/mpv");
+}
+
+function resolveFfmpegPathForEncoderDiscovery(configDoc) {
+  const p = configDoc?.obsFfmpegPaths?.ffmpegPath;
+  if (typeof p === "string" && p.trim()) {
+    const t = p.trim();
+    if (looksLikeMpvExecutablePath(t)) {
+      return defaultConfig.obsFfmpegPaths.ffmpegPath;
+    }
+    return t;
+  }
+  return defaultConfig.obsFfmpegPaths.ffmpegPath;
+}
+
+function getEncoderDevicesFromDiscovery() {
+  const loaded = loadDiskConfig();
+  const configDoc = loaded.migratedDocument || defaultConfig;
+  const ffmpegPath = resolveFfmpegPathForEncoderDiscovery(configDoc);
+  const encoderDir = path.resolve(ROOT, "encoder");
+  const scriptPath = path.join(encoderDir, "list_uvc_devices.py");
+  if (!fs.existsSync(scriptPath)) {
+    return {
+      ok: false,
+      error: "script_missing",
+      message: `Encoder discovery script missing: ${scriptPath}`,
+    };
+  }
+  const pythonExe =
+    (process.env.REPLAYTROVE_PYTHON && process.env.REPLAYTROVE_PYTHON.trim()) ||
+    (process.platform === "win32" ? "python" : "python3");
+  const result = spawnSync(pythonExe, [scriptPath, "--json", "--ffmpeg", ffmpegPath], {
+    cwd: encoderDir,
+    env: { ...process.env, FFMPEG_PATH: ffmpegPath },
+    encoding: "utf8",
+    maxBuffer: 12 * 1024 * 1024,
+  });
+  if (result.error) {
+    return {
+      ok: false,
+      error: "spawn_failed",
+      message: result.error.message || String(result.error),
+    };
+  }
+  const out = (result.stdout || "").trim();
+  if (!out) {
+    return {
+      ok: false,
+      error: "empty_output",
+      message: "Discovery script produced no stdout.",
+      stderr: (result.stderr || "").slice(0, 4000),
+    };
+  }
+  try {
+    const parsed = JSON.parse(out);
+    console.error(
+      `[replaytrove-control-center] encoder devices discovery devicesOk=${Boolean(parsed?.ok)} video=${parsed?.videoDevices?.length ?? 0} audio=${parsed?.audioDevices?.length ?? 0} ffmpegPath=${ffmpegPath}`,
+    );
+    return { ok: true, data: parsed, ffmpegPathUsed: ffmpegPath };
+  } catch (err) {
+    return {
+      ok: false,
+      error: "invalid_json",
+      message: err instanceof Error ? err.message : String(err),
+      stdoutExcerpt: out.slice(0, 2000),
+      stderr: (result.stderr || "").slice(0, 4000),
+    };
+  }
+}
+
 function enqueueScoreboardSafeReloadCommand(correlationId) {
-  // Explicit operator-triggered scoreboard-only reload command enqueue.
-  fs.mkdirSync(SCOREBOARD_PENDING_DIR, { recursive: true });
+  const loaded = loadDiskConfig();
+  const configDoc = loaded.migratedDocument || defaultConfig;
+  const { absoluteRoot, source: commandsRootSource } = resolveCommandsRootAbsolute(configDoc);
+  const pendingDir = path.join(absoluteRoot, "scoreboard", "pending");
+  console.error(
+    `[replaytrove-control-center] enqueue scoreboard command pendingDir=${pendingDir} commandsRootSource=${commandsRootSource} sourceApp=control-center action=reload_scoreboard_safe_settings`,
+  );
+  fs.mkdirSync(pendingDir, { recursive: true });
   const created = new Date();
   const createdIso = created.toISOString();
   const id = randomUUID().replace(/-/g, "");
   const ts = createdIso.replace(/[-:.TZ]/g, "").slice(0, 17);
   const fileBase = `${ts}_reload_scoreboard_safe_settings`;
-  const tmpPath = path.join(SCOREBOARD_PENDING_DIR, `${fileBase}.tmp`);
-  const finalPath = path.join(SCOREBOARD_PENDING_DIR, `${fileBase}.json`);
+  const tmpPath = path.join(pendingDir, `${fileBase}.tmp`);
+  const finalPath = path.join(pendingDir, `${fileBase}.json`);
   const payload = {
     id,
     action: "reload_scoreboard_safe_settings",
@@ -496,12 +867,14 @@ function enqueueScoreboardSafeReloadCommand(correlationId) {
 
 const server = createServer(async (req, res) => {
   try {
+    const pathOnly = requestPathname(req.url);
+
     if (req.method === "OPTIONS") {
       sendJson(res, 200, { ok: true });
       return;
     }
 
-    if (req.method === "GET" && req.url === "/api/config") {
+    if (req.method === "GET" && pathOnly === "/api/config") {
       const loaded = loadDiskConfig();
       const validation = validateCandidateDocument(loaded.migratedDocument);
       sendJson(res, 200, {
@@ -521,7 +894,7 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "POST" && req.url === "/api/config/validate") {
+    if (req.method === "POST" && pathOnly === "/api/config/validate") {
       const body = await readJsonBody(req);
       const candidate = body?.config;
       const validation = validateCandidateDocument(candidate);
@@ -537,7 +910,7 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "POST" && req.url === "/api/config/save") {
+    if (req.method === "POST" && pathOnly === "/api/config/save") {
       const body = await readJsonBody(req);
       const candidate = body?.config;
       const validation = validateCandidateDocument(candidate);
@@ -567,7 +940,7 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "GET" && req.url === "/api/config/export") {
+    if (req.method === "GET" && pathOnly === "/api/config/export") {
       const loaded = loadDiskConfig();
       res.writeHead(200, {
         "Content-Type": "application/json; charset=utf-8",
@@ -579,7 +952,7 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "POST" && req.url === "/api/scoreboard/reload-safe-settings") {
+    if (req.method === "POST" && pathOnly === "/api/scoreboard/reload-safe-settings") {
       // Queue-only endpoint; apply/reject result is produced by scoreboard process.
       const body = await readJsonBody(req);
       const queued = enqueueScoreboardSafeReloadCommand(body?.correlationId);
@@ -594,7 +967,7 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "GET" && req.url === "/api/scoreboard/reload-safe-settings-status") {
+    if (req.method === "GET" && pathOnly === "/api/scoreboard/reload-safe-settings-status") {
       // Read-only view of last scoreboard reload outcome artifact.
       if (!fs.existsSync(SCOREBOARD_SAFE_RELOAD_STATUS_PATH)) {
         sendJson(res, 200, {
@@ -615,7 +988,35 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "GET" && req.url === "/api/system/status") {
+    if (req.method === "GET" && pathOnly === "/api/encoder/devices") {
+      const discovery = getEncoderDevicesFromDiscovery();
+      if (!discovery.ok) {
+        sendJson(res, 500, {
+          ok: false,
+          error: discovery.error,
+          message: discovery.message,
+          stderr: discovery.stderr,
+          stdoutExcerpt: discovery.stdoutExcerpt,
+        });
+        return;
+      }
+      const d = discovery.data;
+      sendJson(res, 200, {
+        ok: true,
+        ffmpegPathUsed: discovery.ffmpegPathUsed,
+        devicesOk: Boolean(d?.ok),
+        platform: d?.platform,
+        videoDevices: d?.videoDevices ?? [],
+        audioDevices: d?.audioDevices ?? [],
+        parseNote: d?.parseNote,
+        rawExcerpt: d?.rawExcerpt,
+        ffmpegPath: d?.ffmpegPath,
+        ffmpegReturnCode: d?.ffmpegReturnCode,
+      });
+      return;
+    }
+
+    if (req.method === "GET" && pathOnly === "/api/system/status") {
       const status = await buildSystemStatus();
       sendJson(res, 200, { ok: true, status });
       return;

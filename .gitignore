@@ -32,6 +32,10 @@
 *.log.*
 scoreboard/logs/
 **/logs/*.log*
+# Central daily JSONL (launcher, scoreboard, worker, encoder, cleaner, scripts)
+/logs/
+# Worker job database (not under logs/)
+/data/*.sqlite
 *.zip
 *.tmp
 *.temp
@@ -59,6 +63,9 @@ __pycache__/
 
 # ---------- Bundled binaries (GitHub 100MB file limit) ----------
 /mpv/
+
+# Launcher supervision operator-local desired state (rehydrated on startup)
+/launcher/supervision_desired_state.json
 
 # ---------- ReplayTrove runtime directories ----------
 /clips/

@@ -5,8 +5,13 @@
 
 .DESCRIPTION
   Preserves existing interface (-Http / -TriggerFile), but delegates to the canonical
-  replay entrypoint script (save_replay_and_trigger.ps1) with:
-    -SkipObsSave -SkipScoreboardReplayOn
+  replay entrypoint (save_replay_and_trigger.ps1) with -SkipObsSave only.
+
+  Use when OBS SaveReplay already ran (e.g. separate hotkey). Still runs worker ingest
+  and, on worker success, sends replay_on to the scoreboard (same as full pipeline).
+
+  For when to use this vs the full canonical script, see:
+  docs/operator-replay-trigger-runbook.md
 #>
 param(
     [Parameter(Mandatory = $false)]
@@ -22,14 +27,28 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot 'replaytrove_json_log.ps1')
+
 function Write-NotifyLog([string] $Message) {
-    $logDir = 'C:\ReplayTrove\state'
-    if (-not (Test-Path -LiteralPath $logDir)) {
-        New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    Write-ReplayTroveJsonl -Component 'scripts' -ScriptName 'worker_notify_instant_replay.ps1' -Event 'worker_notify' -Level 'INFO' -Message $Message -Data @{
+        detail = $Message
     }
-    $logPath = Join-Path $logDir 'worker_notify_instant_replay_log.txt'
-    $stamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
-    Add-Content -LiteralPath $logPath -Value "$stamp  $Message"
+}
+
+function Resolve-HttpReplayPortFromUnified {
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $defaultPath = Join-Path $repoRoot 'config\settings.json'
+    $cfgPath = if (-not [string]::IsNullOrWhiteSpace($env:REPLAYTROVE_SETTINGS_FILE)) { $env:REPLAYTROVE_SETTINGS_FILE } else { $defaultPath }
+    if (-not (Test-Path -LiteralPath $cfgPath)) {
+        return @{ Port = $null; Path = $cfgPath }
+    }
+    try {
+        $j = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json -ErrorAction Stop
+        $p = $j.worker.httpReplayTriggerPort
+        return @{ Port = $p; Path = $cfgPath }
+    } catch {
+        return @{ Port = $null; Path = $cfgPath }
+    }
 }
 
 $canonicalScript = Join-Path $PSScriptRoot 'save_replay_and_trigger.ps1'
@@ -41,15 +60,28 @@ if (-not (Test-Path -LiteralPath $canonicalScript)) {
 
 $args = @(
     '-NoProfile',
+    '-WindowStyle', 'Hidden',
     '-ExecutionPolicy', 'Bypass',
     '-File', $canonicalScript,
-    '-SkipObsSave',
-    '-SkipScoreboardReplayOn'
+    '-SkipObsSave'
 )
 if ($Http) {
     if ($HttpPort -le 0) {
-        Write-Error "worker_notify_instant_replay: -Http requires a port (set -HttpPort or REPLAY_TRIGGER_HTTP_PORT)."
-        exit 2
+        $unified = Resolve-HttpReplayPortFromUnified
+        $portSource = 'default_18765'
+        if ($null -ne $unified.Port) {
+            try {
+                $HttpPort = [int]$unified.Port
+                $portSource = 'unified_settings'
+            } catch {
+                $HttpPort = 0
+            }
+        }
+        if ($HttpPort -le 0) {
+            $HttpPort = 18765
+            $portSource = 'default_18765'
+        }
+        Write-NotifyLog ("compat_wrapper=http_port_resolved port={0} source={1} cfg={2}" -f $HttpPort, $portSource, $unified.Path)
     }
     $args += @(
         '-WorkerReplayHost', $HttpHost,
@@ -65,6 +97,6 @@ else {
     Write-NotifyLog "compat_wrapper=forward mode=trigger_file path=$TriggerFile"
 }
 
-$proc = Start-Process -FilePath powershell.exe -ArgumentList $args -Wait -PassThru
+$proc = Start-Process -FilePath powershell.exe -ArgumentList $args -WindowStyle Hidden -Wait -PassThru
 Write-NotifyLog "compat_wrapper=canonical_exit code=$($proc.ExitCode)"
 exit $proc.ExitCode

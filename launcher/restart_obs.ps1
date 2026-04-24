@@ -12,8 +12,9 @@ $ErrorActionPreference = 'Stop'
 
 $ObsDir = if ($env:REPLAYTROVE_OBS_DIR) { $env:REPLAYTROVE_OBS_DIR } else { 'C:\Program Files\obs-studio\bin\64bit' }
 $ObsExe = if ($env:REPLAYTROVE_OBS_EXE) { $env:REPLAYTROVE_OBS_EXE } else { Join-Path $ObsDir 'obs64.exe' }
-$ObsSentinel = if ($env:REPLAYTROVE_OBS_SENTINEL) { $env:REPLAYTROVE_OBS_SENTINEL } else { Join-Path $env:APPDATA 'obs-studio\.sentinel' }
-$obsArgs = @('--disable-shutdown-check', '--startreplaybuffer', '--verbose')
+$ObsSentinelRaw = if ($env:REPLAYTROVE_OBS_SENTINEL) { $env:REPLAYTROVE_OBS_SENTINEL } else { Join-Path $env:APPDATA 'obs-studio\.sentinel' }
+$ObsSentinel = [Environment]::ExpandEnvironmentVariables($ObsSentinelRaw.Trim())
+$obsArgs = @('--disable-shutdown-check', '--disable-missing-files-check', '--startreplaybuffer', '--verbose')
 
 if (-not (Test-Path -LiteralPath $ObsExe)) {
   Write-Error "OBS executable not found: $ObsExe"

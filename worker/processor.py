@@ -16,6 +16,7 @@ import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from supabase import Client
@@ -65,6 +66,26 @@ from pickle_planner import get_booking_match_for_clip
 from uploader import S3Uploader
 
 logger = logging.getLogger(__name__)
+
+
+def _emit_clip_processing_completed(lc: dict[str, Any], outcome: str) -> None:
+    if lc.get("_logged"):
+        return
+    lc["_logged"] = True
+    logger.info(
+        "Worker clip processing completed",
+        extra={
+            "rt_event": "clip_processing_completed",
+            "rt_correlation_id": lc["correlation_id"],
+            "rt_clip_id": lc["idem"],
+            "structured": {
+                "outcome": outcome,
+                "path": lc["path_s"],
+                "job_uuid": lc["correlation_id"],
+                "idempotency_key": lc["idem"],
+            },
+        },
+    )
 
 
 def _clip_fp_kwargs(settings: Settings) -> dict[str, object]:
@@ -1382,6 +1403,7 @@ def process_clip(
         assert job is not None
 
         held_long_slot = False
+        clip_lifecycle: dict[str, Any] | None = None
         try:
             if long_clip_semaphore is not None:
                 try:
@@ -1653,6 +1675,26 @@ def process_clip(
             if not job.slug:
                 job_store.update_job(idem, slug=slug)
 
+            clip_lifecycle = {
+                "correlation_id": str(job.job_uuid),
+                "idem": idem,
+                "path_s": str(clip_path),
+                "_logged": False,
+            }
+            logger.info(
+                "Worker clip processing span started",
+                extra={
+                    "rt_event": "clip_processing_started",
+                    "rt_correlation_id": clip_lifecycle["correlation_id"],
+                    "rt_clip_id": idem,
+                    "structured": {
+                        "job_uuid": clip_lifecycle["correlation_id"],
+                        "idempotency_key": idem,
+                        "path": clip_lifecycle["path_s"],
+                    },
+                },
+            )
+
             if not (flags & STEP_UPLOAD_ORIGINAL):
                 pipeline_upload_started = True
                 job_store.update_job(
@@ -1671,6 +1713,8 @@ def process_clip(
                         error_message="connectivity_offline",
                         clip_path=clip_path,
                     )
+                    if clip_lifecycle is not None:
+                        clip_lifecycle["outcome"] = "deferred"
                     return
                 try:
                     up_orig = primary_uploader.upload_file(clip_path, s3_original_key)
@@ -1689,6 +1733,8 @@ def process_clip(
                         error_message=str(exc),
                         clip_path=clip_path,
                     )
+                    if clip_lifecycle is not None:
+                        clip_lifecycle["outcome"] = "deferred"
                     return
                 except Exception:
                     job_store.update_job(
@@ -1770,6 +1816,8 @@ def process_clip(
                         rd = settings.ffmpeg_decode_retry_delay_seconds
                         if rd > 0:
                             time.sleep(rd)
+                        if clip_lifecycle is not None:
+                            clip_lifecycle["outcome"] = "retry_scheduled"
                         return
                     with _FFMPEG_SOFT_FAILS_LOCK:
                         _FFMPEG_SOFT_FAILS.pop(key, None)
@@ -1778,6 +1826,8 @@ def process_clip(
                         extra={"structured": {"path": str(clip_path), "error": str(exc)[:500]}},
                     )
                     if not _owns_active_processing_claim(original_input_path):
+                        if clip_lifecycle is not None:
+                            clip_lifecycle["outcome"] = "aborted"
                         return
                     try:
                         dest = unique_destination(settings.failed_folder, clip_path.name)
@@ -1801,6 +1851,8 @@ def process_clip(
                             "Could not move decode-failed clip to failed folder",
                             extra={"structured": {"path": str(clip_path)}},
                         )
+                    if clip_lifecycle is not None:
+                        clip_lifecycle["outcome"] = "failed"
                     return
 
             if not (flags & STEP_UPLOAD_PREVIEW):
@@ -1821,6 +1873,8 @@ def process_clip(
                         error_message="connectivity_offline",
                         clip_path=clip_path,
                     )
+                    if clip_lifecycle is not None:
+                        clip_lifecycle["outcome"] = "deferred"
                     return
                 try:
                     up_prev = primary_uploader.upload_file(preview_path, s3_preview_key)
@@ -1839,6 +1893,8 @@ def process_clip(
                         error_message=str(exc),
                         clip_path=clip_path,
                     )
+                    if clip_lifecycle is not None:
+                        clip_lifecycle["outcome"] = "deferred"
                     return
                 except Exception:
                     job_store.update_job(
@@ -1905,6 +1961,8 @@ def process_clip(
                         error_message="connectivity_offline",
                         clip_path=clip_path,
                     )
+                    if clip_lifecycle is not None:
+                        clip_lifecycle["outcome"] = "deferred"
                     return
                 try:
                     inserted_clip = upsert_clip_record(
@@ -1933,6 +1991,8 @@ def process_clip(
                         error_message=str(exc),
                         clip_path=clip_path,
                     )
+                    if clip_lifecycle is not None:
+                        clip_lifecycle["outcome"] = "deferred"
                     return
                 except Exception:
                     job_store.update_job(
@@ -1999,6 +2059,8 @@ def process_clip(
                             error_message="connectivity_offline",
                             clip_path=clip_path,
                         )
+                        if clip_lifecycle is not None:
+                            clip_lifecycle["outcome"] = "deferred"
                         return
                     try:
                         booking_match = get_booking_match_for_clip(
@@ -2016,6 +2078,8 @@ def process_clip(
                             error_message=str(exc),
                             clip_path=clip_path,
                         )
+                        if clip_lifecycle is not None:
+                            clip_lifecycle["outcome"] = "deferred"
                         return
                     booking_id = booking_match.booking_id
                     if booking_id:
@@ -2038,6 +2102,8 @@ def process_clip(
                                 error_message=str(exc),
                                 clip_path=clip_path,
                             )
+                            if clip_lifecycle is not None:
+                                clip_lifecycle["outcome"] = "deferred"
                             return
                         except Exception:
                             logger.exception(
@@ -2081,6 +2147,8 @@ def process_clip(
                                 error_message=str(exc),
                                 clip_path=clip_path,
                             )
+                            if clip_lifecycle is not None:
+                                clip_lifecycle["outcome"] = "deferred"
                             return
                         except Exception:
                             logger.exception(
@@ -2133,6 +2201,8 @@ def process_clip(
                                 "clip_identity": idem,
                             },
                         )
+                        if clip_lifecycle is not None:
+                            clip_lifecycle["outcome"] = "deferred"
                         return
                     else:
                         log_worker_event(
@@ -2251,10 +2321,17 @@ def process_clip(
                     },
                 )
 
+            if clip_lifecycle is not None:
+                clip_lifecycle["outcome"] = "success"
             _clear_recent_failure(original_input_path)
             _clear_recent_failure(clip_path)
 
         finally:
+            if clip_lifecycle is not None:
+                _emit_clip_processing_completed(
+                    clip_lifecycle,
+                    str(clip_lifecycle.get("outcome") or "interrupted"),
+                )
             if held_long_slot and long_clip_semaphore is not None:
                 long_clip_semaphore.release()
 

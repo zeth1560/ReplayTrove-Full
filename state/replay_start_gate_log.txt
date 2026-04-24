@@ -1,2 +1,15 @@
 2026-04-22 01:37:19.653  compat_wrapper=start now=1776839839
 2026-04-22 01:37:19.673  compat_wrapper=blocked reason=cooldown remaining=30s
+2026-04-22 14:16:18.596  compat_wrapper=start now=1776885378
+2026-04-22 14:16:18.667  compat_wrapper=forward canonical=C:\ReplayTrove\scripts\save_replay_and_trigger.ps1
+2026-04-22 14:18:00.880  compat_wrapper=canonical_exit code=0
+2026-04-22 14:37:45.556  compat_wrapper=start now=1776886665
+2026-04-22 14:37:45.605  compat_wrapper=forward canonical=C:\ReplayTrove\scripts\save_replay_and_trigger.ps1
+2026-04-22 14:45:56.207  compat_wrapper=start now=1776887156
+2026-04-22 14:45:56.276  compat_wrapper=forward canonical=C:\ReplayTrove\scripts\save_replay_and_trigger.ps1
+2026-04-22 14:47:57.056  compat_wrapper=start now=1776887276
+2026-04-22 14:47:57.124  compat_wrapper=forward canonical=C:\ReplayTrove\scripts\save_replay_and_trigger.ps1
+2026-04-22 14:51:08.286  compat_wrapper=start now=1776887468
+2026-04-22 14:51:08.339  compat_wrapper=forward canonical=C:\ReplayTrove\scripts\save_replay_and_trigger.ps1
+2026-04-23 08:16:57.378  compat_wrapper=canonical_exit code=-1073741510
+2026-04-23 08:16:57.379  compat_wrapper=canonical_exit code=-1073741510

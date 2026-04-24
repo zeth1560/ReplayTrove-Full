@@ -4,16 +4,21 @@ param(
     [string]$TmpCleanupRoot = "C:\ReplayTrove",
     [int]$TmpRetentionHours = 1,
     [int]$IntervalMinutes = 15,
-    [string]$LogPath = "C:\ReplayTrove\cleaner\cleaner-bee.log"
+    # Deprecated: central logs use logs/cleaner/cleaner-YYYY-MM-DD.jsonl (REPLAYTROVE_LOGS_ROOT).
+    [string]$LogPath = ""
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$rtRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $rtRoot 'scripts\replaytrove_json_log.ps1')
+
 function Write-Log {
     param([string]$Message)
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    Add-Content -Path $LogPath -Value "[$timestamp] $Message"
+    Write-ReplayTroveJsonl -Component 'cleaner' -Event 'cleaner_bee' -Level 'INFO' -Message $Message -Data @{
+        detail = $Message
+    }
 }
 
 function Remove-ExpiredFiles {
@@ -94,11 +99,6 @@ function Remove-ExpiredTmpFiles {
     else {
         Write-Log "No expired .tmp files under '$Root'."
     }
-}
-
-$logDir = Split-Path -Path $LogPath -Parent
-if ($logDir -and -not (Test-Path -Path $logDir -PathType Container)) {
-    New-Item -Path $logDir -ItemType Directory -Force | Out-Null
 }
 
 Write-Log "Cleaner Bee started. Retention=${RetentionHours}h, .tmp retention=${TmpRetentionHours}h, interval=${IntervalMinutes}m."

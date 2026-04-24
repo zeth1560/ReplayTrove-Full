@@ -17,7 +17,9 @@ _LOG = logging.getLogger(__name__)
 # Defaults (formerly module-level constants in main.py)
 DEFAULT_STATE_FILE = "state.json"
 DEFAULT_ENV_FILE = ".env"
-DEFAULT_SCOREBOARD_LOG_FILE = "logs/scoreboard.log"
+# Empty: use central JSONL only under REPLAYTROVE_LOGS_ROOT (see logging_config).
+DEFAULT_SCOREBOARD_LOG_FILE = ""
+DEFAULT_CENTRAL_LOGS_ROOT = r"C:\ReplayTrove\logs"
 DEFAULT_SCOREBOARD_BG = "Score BG.png"
 DEFAULT_REPLAY_SLATE = "ir slate.png"
 DEFAULT_SLIDESHOW_DIR = r"C:\Users\admin\Dropbox\slideshow"
@@ -216,6 +218,7 @@ class Settings:
     slideshow_enabled: bool = True
     scoreboard_debug: bool = False
     scoreboard_log_file: str = DEFAULT_SCOREBOARD_LOG_FILE
+    central_logs_root: str = DEFAULT_CENTRAL_LOGS_ROOT
     heartbeat_interval_minutes: int = 0
     replay_transition_timeout_ms: int = REPLAY_TRANSITION_TIMEOUT_MS
     replay_slate_stuck_timeout_ms: int = REPLAY_SLATE_STUCK_TIMEOUT_MS
@@ -242,7 +245,9 @@ class Settings:
     obs_executable: str = ""
     # Startup args for OBS process when restart chord relaunches it.
     # `--disable-shutdown-check` bypasses safe mode prompt after unclean exits.
-    obs_restart_launch_args: str = "--disable-shutdown-check"
+    obs_restart_launch_args: str = (
+        "--disable-shutdown-check --disable-missing-files-check --startreplaybuffer"
+    )
     obs_restart_start_replay_buffer: bool = True
     obs_restart_post_launch_delay_ms: int = 4500
 
@@ -743,7 +748,13 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
 
     obs_restart_chord_enabled = _env_truthy(g("OBS_RESTART_CHORD_ENABLED"), False)
     obs_executable = _normalize_path(g("OBS_EXECUTABLE", "") or "")
-    obs_restart_launch_args = (g("OBS_RESTART_LAUNCH_ARGS", "--disable-shutdown-check") or "").strip()
+    obs_restart_launch_args = (
+        g(
+            "OBS_RESTART_LAUNCH_ARGS",
+            "--disable-shutdown-check --disable-missing-files-check --startreplaybuffer",
+        )
+        or ""
+    ).strip()
     obs_restart_start_replay_buffer = _env_truthy(
         g("OBS_RESTART_START_REPLAY_BUFFER", "1"),
         True,
@@ -794,6 +805,12 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
             scoreboard_log_file = (
                 _normalize_path(str(_raw_log).strip()) or DEFAULT_SCOREBOARD_LOG_FILE
             )
+
+    _raw_central = os.environ.get("REPLAYTROVE_LOGS_ROOT")
+    if _raw_central is None or not str(_raw_central).strip():
+        central_logs_root = DEFAULT_CENTRAL_LOGS_ROOT
+    else:
+        central_logs_root = _normalize_path(str(_raw_central).strip()) or DEFAULT_CENTRAL_LOGS_ROOT
 
     settings = Settings(
         state_file=state_file,
@@ -857,6 +874,7 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
         slideshow_enabled=slideshow_enabled,
         scoreboard_debug=scoreboard_debug,
         scoreboard_log_file=scoreboard_log_file,
+        central_logs_root=central_logs_root,
         heartbeat_interval_minutes=heartbeat_interval_minutes,
         replay_transition_timeout_ms=transition_timeout,
         replay_slate_stuck_timeout_ms=slate_stuck_timeout,
@@ -1026,6 +1044,7 @@ def summarize_settings(settings: Settings) -> str:
         f"slideshow_enabled={settings.slideshow_enabled}",
         f"scoreboard_debug={settings.scoreboard_debug}",
         f"scoreboard_log_file={settings.scoreboard_log_file!r}",
+        f"central_logs_root={settings.central_logs_root!r}",
         f"heartbeat_interval_minutes={settings.heartbeat_interval_minutes}",
         f"replay_transition_timeout_ms={settings.replay_transition_timeout_ms}",
         f"replay_slate_stuck_timeout_ms={settings.replay_slate_stuck_timeout_ms}",

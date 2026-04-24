@@ -5,7 +5,6 @@ from __future__ import annotations
 import enum
 import logging
 import os
-import shutil
 import subprocess
 import tempfile
 import threading
@@ -18,6 +17,7 @@ from PIL import Image, ImageTk
 
 from scoreboard.config.settings import Settings
 from scoreboard.launcher_obs_restart import request_launcher_obs_restart
+from scoreboard.startup_validation import resolve_mpv_executable
 from scoreboard.launcher_status import utc_now_iso, write_launcher_status_json
 from scoreboard.obs_health import notify_obs_instant_replay_unavailable
 from scoreboard.scheduler import AfterScheduler
@@ -595,6 +595,7 @@ class ReplayController:
             self._replay_pending_mtime = None
 
     def toggle_replay(self) -> None:
+        # Compatibility path: UI / command bus toggles replay overlay; canonical ingest uses save_replay_and_trigger.ps1.
         if not self._settings.replay_enabled:
             _LOG.info("Replay: toggle ignored (REPLAY_ENABLED=0)")
             return
@@ -1161,26 +1162,7 @@ class ReplayController:
         self._mpv_input_conf_path = None
 
     def _resolve_mpv_executable(self) -> str | None:
-        candidates: list[str] = []
-        if self._settings.mpv_path:
-            candidates.append(self._settings.mpv_path)
-        discovered = shutil.which("mpv")
-        if discovered:
-            candidates.append(discovered)
-        discovered_exe = shutil.which("mpv.exe")
-        if discovered_exe:
-            candidates.append(discovered_exe)
-        candidates.extend(
-            [
-                r"C:\Program Files\mpv\mpv.exe",
-                r"C:\Program Files (x86)\mpv\mpv.exe",
-                r"C:\mpv\mpv.exe",
-            ]
-        )
-        for candidate in candidates:
-            if candidate and os.path.isfile(candidate):
-                return candidate
-        return None
+        return resolve_mpv_executable(self._settings)
 
     def stop_replay_video_and_return(self) -> None:
         _LOG.info("Replay: operator stopped video (return to slate)")

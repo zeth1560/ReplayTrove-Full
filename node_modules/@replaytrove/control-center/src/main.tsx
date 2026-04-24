@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import { defaultConfig } from "../../../packages/config/src/defaults.js";
@@ -9,12 +9,15 @@ const API_BASE = "http://127.0.0.1:4311";
 
 type SectionKey = keyof AppConfig;
 type GroupName =
+  | "General"
   | "Paths and Storage"
   | "Replay Processing"
   | "Playback and MPV"
   | "Launcher Startup"
   | "Status and Monitoring"
-  | "Timing and Retries";
+  | "Timing and Retries"
+  | "Encoder (UVC)"
+  | "Integrations";
 
 type DangerousType = "startup" | "runtime" | "conflict";
 
@@ -36,6 +39,14 @@ type FieldMeta = {
 type SourceResolved<T> = {
   value: T;
   source: "unified" | "env" | "default";
+};
+
+type ArtifactFreshness = {
+  state: string;
+  ageSeconds: number | null;
+  thresholdSeconds: number | null;
+  humanAge: string | null;
+  basis?: string;
 };
 
 type SystemStatus = {
@@ -67,8 +78,15 @@ type SystemStatus = {
     legacyRoot: string;
   };
   launcherSupervision: {
+    supervisionStatusArtifact?: "missing" | "corrupt" | "available";
+    artifactFreshness?: {
+      ownerLease: ArtifactFreshness;
+      supervisionStatus: ArtifactFreshness;
+      desiredState: ArtifactFreshness;
+    };
     owner: {
-      state: "active" | "graceful_shutdown" | "stale" | "unavailable";
+      leaseFileRelative?: string;
+      state: "active" | "graceful_shutdown" | "stale" | "unavailable" | "corrupt";
       active: boolean;
       ownerId: string | null;
       pid: number | null;
@@ -79,13 +97,37 @@ type SystemStatus = {
       leaseTimeoutSec: number | null;
     };
     snapshotTimestamp: string | null;
+    supervisionStatusFileRelative?: string;
+    desiredStatePersisted: {
+      fileRelative: string;
+      fileState: "missing" | "corrupt" | "available";
+      updatedAt: string | null;
+      updateReason: string | null;
+      schemaVersion: number | null;
+      components: Record<string, "running" | "stopped" | null>;
+    };
+    managedComponents: Array<{
+      name: string;
+      desiredPersisted: "running" | "stopped" | "unknown";
+      desiredLive: "running" | "stopped" | null;
+      lastClassification: string | null;
+      lastReason: string | null;
+      lastRestartAt: string | null;
+      lastRestartReason: string | null;
+      lastObservedAt: string | null;
+      consecutiveUnhealthy: number | null;
+      liveRowFreshness?: "fresh" | "stale" | "unknown" | "unavailable";
+    }>;
     components: Record<
       string,
       {
+        desiredStateLive?: string | null;
+        lastObservedAt?: string | null;
         lastClassification: string | null;
         lastReason: string | null;
         lastRestartAt: string | null;
         lastRestartReason: string | null;
+        consecutiveUnhealthy?: number | null;
       }
     >;
   };
@@ -100,6 +142,7 @@ const SECTION_LABELS: Record<SectionKey, string> = {
   launcher: "Launcher",
   cleaner: "Cleaner",
   obsFfmpegPaths: "OBS / FFmpeg / Paths",
+  encoder: "Encoder (UVC)",
   storage: "Storage",
   picklePlanner: "Pickle Planner",
 };
@@ -116,6 +159,13 @@ function safeParseJson<T>(text: string): T | null {
   }
 }
 
+function looksLikeMpvExecutablePath(p: string): boolean {
+  const t = p.trim();
+  if (!t) return false;
+  const norm = t.replace(/\\/g, "/").toLowerCase();
+  return norm.endsWith("/mpv.exe") || norm.endsWith("/mpv");
+}
+
 function fieldLabel(label: string, help?: string) {
   return (
     <label style={{ display: "block", marginBottom: 8 }}>
@@ -128,6 +178,24 @@ function fieldLabel(label: string, help?: string) {
 function fieldHelp(help?: string) {
   if (!help) return null;
   return <div style={{ fontSize: 12, color: "#555", marginTop: 4 }}>{help}</div>;
+}
+
+function supervisionFreshnessLine(title: string, f: ArtifactFreshness | undefined) {
+  if (!f) return null;
+  const parts: string[] = [f.state];
+  if (f.humanAge != null) parts.push(`~${f.humanAge} old`);
+  if (
+    f.thresholdSeconds != null &&
+    f.state !== "corrupt" &&
+    f.state !== "unavailable"
+  ) {
+    parts.push(`stale if older than ${f.thresholdSeconds}s`);
+  }
+  return (
+    <div style={{ fontSize: 11, color: "#555", marginBottom: 4 }} title={f.basis}>
+      <span style={{ fontWeight: 600 }}>{title}:</span> {parts.join(" · ")}
+    </div>
+  );
 }
 
 const panelStyle: React.CSSProperties = {
@@ -159,7 +227,7 @@ const FIELD_META: FieldMeta[] = [
   {
     key: "worker.httpReplayTriggerHost",
     label: "Worker replay trigger host",
-    help: "Host interface for worker replay trigger HTTP endpoint.",
+    help: "Host for the worker POST /replay listener (usually 127.0.0.1). See docs/operator-replay-trigger-runbook.md.",
     placeholder: "127.0.0.1",
     group: "Replay Processing",
     restartRequired: true,
@@ -273,6 +341,7 @@ const FIELD_META: FieldMeta[] = [
   {
     key: "worker.httpReplayTriggerPort",
     label: "Worker replay trigger port",
+    help: "Appliance default is 18765; Companion/Stream Deck must match. Guide: docs/operator-replay-trigger-runbook.md.",
     group: "Replay Processing",
     restartRequired: true,
     hotReloadCandidate: false,
@@ -321,6 +390,7 @@ const FIELD_META: FieldMeta[] = [
   {
     key: "worker.httpReplayTriggerEnabled",
     label: "Enable worker replay trigger HTTP",
+    help: "Leave on for normal appliance replay (canonical script uses POST /replay). See docs/operator-replay-trigger-runbook.md.",
     group: "Replay Processing",
     restartRequired: true,
     hotReloadCandidate: false,
@@ -347,6 +417,7 @@ const FIELD_META: FieldMeta[] = [
   {
     key: "worker.enableInstantReplayBackgroundIngest",
     label: "Enable background ingest loop",
+    help: "Legacy/emergency/testing; canonical path is HTTP + save_replay_and_trigger.ps1. See docs/operator-replay-trigger-runbook.md.",
     group: "Replay Processing",
     restartRequired: true,
     hotReloadCandidate: false,
@@ -553,12 +624,13 @@ const FIELD_META: FieldMeta[] = [
   {
     key: "obsFfmpegPaths.mpvPath",
     label: "MPV executable path",
+    help: "Used for scoreboard / replay playback when MPV is enabled.",
     group: "Playback and MPV",
     restartRequired: true,
     hotReloadCandidate: false,
     advanced: false,
     dangerous: true,
-    surfacedInForm: false,
+    surfacedInForm: true,
     impact: "Replay playback may fail to launch.",
     dangerousType: "startup",
   },
@@ -578,12 +650,13 @@ const FIELD_META: FieldMeta[] = [
   {
     key: "obsFfmpegPaths.obsExecutable",
     label: "OBS executable path",
+    help: "Full path to obs64.exe (or equivalent).",
     group: "Launcher Startup",
     restartRequired: true,
     hotReloadCandidate: false,
     advanced: false,
     dangerous: true,
-    surfacedInForm: false,
+    surfacedInForm: true,
     impact: "OBS may fail to start or restart.",
     dangerousType: "startup",
   },
@@ -638,14 +711,37 @@ const FIELD_META: FieldMeta[] = [
   {
     key: "obsFfmpegPaths.ffmpegPath",
     label: "FFmpeg executable path",
+    help: "Must be ffmpeg.exe (not mpv). Also used for encoder device discovery (Refresh device list on Encoder tab).",
     group: "Replay Processing",
     restartRequired: true,
     hotReloadCandidate: false,
     advanced: false,
     dangerous: true,
-    surfacedInForm: false,
+    surfacedInForm: true,
     impact: "Clip processing and remux can fail.",
     dangerousType: "runtime",
+  },
+  {
+    key: "encoder.uvcVideoDevice",
+    label: "UVC / DirectShow video device",
+    help: "Exact device name from ffmpeg -list_devices, or pick from the list after Refresh. Leave empty to use encoder .env UVC_VIDEO_DEVICE.",
+    group: "Encoder (UVC)",
+    restartRequired: true,
+    hotReloadCandidate: false,
+    advanced: false,
+    dangerous: false,
+    surfacedInForm: true,
+  },
+  {
+    key: "encoder.uvcAudioDevice",
+    label: "UVC / DirectShow audio device",
+    help: "Exact audio device name from discovery, or type manually. Leave empty to use encoder .env UVC_AUDIO_DEVICE.",
+    group: "Encoder (UVC)",
+    restartRequired: true,
+    hotReloadCandidate: false,
+    advanced: false,
+    dangerous: false,
+    surfacedInForm: true,
   },
   {
     key: "launcher.scoreboardStatusWatch",
@@ -775,6 +871,58 @@ const FIELD_META: FieldMeta[] = [
     surfacedInForm: true,
   },
   {
+    key: "general.replayTroveRoot",
+    label: "ReplayTrove root directory",
+    help: "Base path for the appliance install; many other paths are relative to this.",
+    placeholder: "C:\\ReplayTrove",
+    group: "Paths and Storage",
+    restartRequired: true,
+    hotReloadCandidate: false,
+    advanced: false,
+    dangerous: true,
+    surfacedInForm: true,
+    impact: "Most path-based services may resolve files incorrectly.",
+    dangerousType: "runtime",
+  },
+  {
+    key: "general.timezone",
+    label: "Timezone (IANA)",
+    help: "Example: America/New_York or UTC.",
+    placeholder: "UTC",
+    group: "General",
+    restartRequired: true,
+    hotReloadCandidate: false,
+    advanced: false,
+    dangerous: false,
+    surfacedInForm: true,
+  },
+  {
+    key: "general.operatorMode",
+    label: "Operator mode",
+    help: "Appliance vs development behavior for tooling and defaults.",
+    group: "General",
+    restartRequired: true,
+    hotReloadCandidate: false,
+    advanced: false,
+    dangerous: true,
+    surfacedInForm: true,
+    impact: "May change how scripts and services expect the machine to be used.",
+    dangerousType: "runtime",
+  },
+  {
+    key: "webApp.enabled",
+    label: "Enable bundled web app",
+    help: "When on, the stack may start the operator web UI on the configured port.",
+    group: "Launcher Startup",
+    restartRequired: true,
+    hotReloadCandidate: false,
+    advanced: false,
+    dangerous: true,
+    surfacedInForm: true,
+    impact: "Web UI will not start from unified config when disabled.",
+    dangerousType: "startup",
+  },
+  {
     key: "webApp.port",
     label: "Web app port",
     group: "Launcher Startup",
@@ -782,9 +930,95 @@ const FIELD_META: FieldMeta[] = [
     hotReloadCandidate: false,
     advanced: true,
     dangerous: true,
-    surfacedInForm: false,
+    surfacedInForm: true,
     impact: "Web app may fail if port conflicts.",
     dangerousType: "conflict",
+  },
+  {
+    key: "cleaner.enabled",
+    label: "Cleaner enabled",
+    help: "Whether log cleanup / retention tasks run.",
+    group: "Status and Monitoring",
+    restartRequired: true,
+    hotReloadCandidate: false,
+    advanced: false,
+    dangerous: true,
+    surfacedInForm: true,
+    impact: "Logs may accumulate if disabled.",
+    dangerousType: "runtime",
+  },
+  {
+    key: "cleaner.maxLogAgeDays",
+    label: "Max log age (days)",
+    help: "Logs older than this may be pruned when cleaner runs.",
+    placeholder: "14",
+    group: "Timing and Retries",
+    restartRequired: true,
+    hotReloadCandidate: true,
+    advanced: false,
+    dangerous: false,
+    surfacedInForm: true,
+  },
+  {
+    key: "storage.s3PreviewPrefix",
+    label: "S3 preview key prefix",
+    help: "Prefix for preview objects in object storage (if used by your deployment).",
+    placeholder: "previews",
+    group: "Integrations",
+    restartRequired: true,
+    hotReloadCandidate: false,
+    advanced: true,
+    dangerous: false,
+    surfacedInForm: true,
+  },
+  {
+    key: "storage.supabaseBookingsTable",
+    label: "Supabase bookings table name",
+    help: "Table used for booking-related integration.",
+    placeholder: "bookings",
+    group: "Integrations",
+    restartRequired: true,
+    hotReloadCandidate: false,
+    advanced: true,
+    dangerous: false,
+    surfacedInForm: true,
+  },
+  {
+    key: "picklePlanner.enabled",
+    label: "Pickle Planner enabled",
+    help: "Enable Pickle Planner integration features.",
+    group: "Integrations",
+    restartRequired: true,
+    hotReloadCandidate: false,
+    advanced: false,
+    dangerous: false,
+    surfacedInForm: true,
+  },
+  {
+    key: "picklePlanner.baseUrl",
+    label: "Pickle Planner base URL",
+    help: "HTTPS base URL for the Pickle Planner API.",
+    placeholder: "https://example.com",
+    group: "Integrations",
+    restartRequired: true,
+    hotReloadCandidate: false,
+    advanced: false,
+    dangerous: false,
+    surfacedInForm: true,
+  },
+  {
+    key: "schemaVersion",
+    label: "Config schema version",
+    help: "Unified settings schema revision. Usually matches the bundled default; change only if you know migrations apply.",
+    placeholder: "1",
+    group: "General",
+    restartRequired: true,
+    hotReloadCandidate: false,
+    advanced: true,
+    dangerous: true,
+    surfacedInForm: true,
+    impact: "Mismatch can cause validation or migration issues on load.",
+    dangerousType: "runtime",
   },
 ];
 
@@ -839,6 +1073,15 @@ function App() {
     };
   } | null>(null);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
+  const [encoderDiscovery, setEncoderDiscovery] = useState<{
+    loading: boolean;
+    error: string | null;
+    devicesOk: boolean;
+    videoDevices: { name: string; devicePath?: string }[];
+    audioDevices: { name: string }[];
+    ffmpegPathUsed?: string;
+    parseNote?: string;
+  } | null>(null);
   const [showScoreboardObsPassword, setShowScoreboardObsPassword] =
     useState<boolean>(false);
   const metaByKey = useMemo(
@@ -913,6 +1156,23 @@ function App() {
         "launcher.scoreboardStatusWatch",
         "launcher.pauseOnError",
         "launcher.debugMode",
+        "encoder.uvcVideoDevice",
+        "encoder.uvcAudioDevice",
+        "obsFfmpegPaths.ffmpegPath",
+        "obsFfmpegPaths.obsExecutable",
+        "obsFfmpegPaths.mpvPath",
+        "general.replayTroveRoot",
+        "general.timezone",
+        "general.operatorMode",
+        "webApp.enabled",
+        "webApp.port",
+        "cleaner.enabled",
+        "cleaner.maxLogAgeDays",
+        "storage.s3PreviewPrefix",
+        "storage.supabaseBookingsTable",
+        "picklePlanner.enabled",
+        "picklePlanner.baseUrl",
+        "schemaVersion",
       ] as const,
     [],
   );
@@ -926,6 +1186,47 @@ function App() {
       setStatus("Loaded disk config. Draft data is available locally.");
     }
   }, []);
+
+  async function refreshEncoderDevices() {
+    setEncoderDiscovery({
+      loading: true,
+      error: null,
+      devicesOk: false,
+      videoDevices: [],
+      audioDevices: [],
+    });
+    try {
+      const res = await fetch(`${API_BASE}/api/encoder/devices`);
+      const data = await res.json();
+      if (!res.ok || !data?.ok) {
+        setEncoderDiscovery({
+          loading: false,
+          error: String(data?.message ?? data?.error ?? `HTTP ${res.status}`),
+          devicesOk: false,
+          videoDevices: [],
+          audioDevices: [],
+        });
+        return;
+      }
+      setEncoderDiscovery({
+        loading: false,
+        error: null,
+        devicesOk: Boolean(data.devicesOk),
+        videoDevices: Array.isArray(data.videoDevices) ? data.videoDevices : [],
+        audioDevices: Array.isArray(data.audioDevices) ? data.audioDevices : [],
+        ffmpegPathUsed: data.ffmpegPathUsed ? String(data.ffmpegPathUsed) : undefined,
+        parseNote: data.parseNote ? String(data.parseNote) : undefined,
+      });
+    } catch (e) {
+      setEncoderDiscovery({
+        loading: false,
+        error: String(e),
+        devicesOk: false,
+        videoDevices: [],
+        audioDevices: [],
+      });
+    }
+  }
 
   async function loadSystemStatus() {
     try {
@@ -966,10 +1267,10 @@ function App() {
     }
   }, [metaByKey, surfacedFormFields]);
 
-  const sectionText = useMemo(
-    () => JSON.stringify(config[active], null, 2),
-    [active, config],
-  );
+  const [jsonDraft, setJsonDraft] = useState("");
+  useEffect(() => {
+    setJsonDraft(JSON.stringify(config[active], null, 2));
+  }, [active, config]);
 
   function setSection(section: SectionKey, nextValue: unknown) {
     setConfig((prev) => ({ ...prev, [section]: nextValue } as AppConfig));
@@ -996,8 +1297,57 @@ function App() {
     setSection("launcher", { ...config.launcher, [key]: value });
   }
 
-  function setSectionFromText(section: SectionKey, text: string) {
-    const parsed = safeParseJson<unknown>(text);
+  function updateEncoder<K extends keyof AppConfig["encoder"]>(
+    key: K,
+    value: AppConfig["encoder"][K],
+  ) {
+    setSection("encoder", { ...config.encoder, [key]: value });
+  }
+
+  function updateGeneral<K extends keyof AppConfig["general"]>(
+    key: K,
+    value: AppConfig["general"][K],
+  ) {
+    setSection("general", { ...config.general, [key]: value });
+  }
+
+  function updateWebApp<K extends keyof AppConfig["webApp"]>(
+    key: K,
+    value: AppConfig["webApp"][K],
+  ) {
+    setSection("webApp", { ...config.webApp, [key]: value });
+  }
+
+  function updateCleaner<K extends keyof AppConfig["cleaner"]>(
+    key: K,
+    value: AppConfig["cleaner"][K],
+  ) {
+    setSection("cleaner", { ...config.cleaner, [key]: value });
+  }
+
+  function updateObsFfmpeg<K extends keyof AppConfig["obsFfmpegPaths"]>(
+    key: K,
+    value: AppConfig["obsFfmpegPaths"][K],
+  ) {
+    setSection("obsFfmpegPaths", { ...config.obsFfmpegPaths, [key]: value });
+  }
+
+  function updateStorage<K extends keyof AppConfig["storage"]>(
+    key: K,
+    value: AppConfig["storage"][K],
+  ) {
+    setSection("storage", { ...config.storage, [key]: value });
+  }
+
+  function updatePicklePlanner<K extends keyof AppConfig["picklePlanner"]>(
+    key: K,
+    value: AppConfig["picklePlanner"][K],
+  ) {
+    setSection("picklePlanner", { ...config.picklePlanner, [key]: value });
+  }
+
+  function applyJsonDraft(section: SectionKey) {
+    const parsed = safeParseJson<unknown>(jsonDraft);
     if (parsed === null) {
       setStatus(`Invalid JSON in ${SECTION_LABELS[section]} section.`);
       return;
@@ -1260,6 +1610,305 @@ function App() {
   }
 
   const sectionKeys = Object.keys(SECTION_LABELS) as SectionKey[];
+
+  function renderEncoderForm() {
+    const vids = encoderDiscovery?.videoDevices ?? [];
+    const auds = encoderDiscovery?.audioDevices ?? [];
+    return (
+      <div>
+        <p style={{ fontSize: 13, color: "#444", maxWidth: 720 }}>
+          Names must match ffmpeg device listing (Windows: DirectShow). Unified values override encoder{" "}
+          <code>.env</code> when non-empty. Save config and restart the encoder for changes to apply.
+        </p>
+        <div style={{ marginBottom: 16 }}>
+          <button type="button" onClick={() => void refreshEncoderDevices()} disabled={encoderDiscovery?.loading}>
+            {encoderDiscovery?.loading ? "Refreshing…" : "Refresh device list"}
+          </button>
+          {encoderDiscovery?.error ? (
+            <div style={{ color: "#a40000", marginTop: 8 }}>{encoderDiscovery.error}</div>
+          ) : null}
+          {encoderDiscovery && !encoderDiscovery.loading && !encoderDiscovery.devicesOk ? (
+            <div style={{ color: "#a65b00", marginTop: 8 }}>
+              No devices were parsed. Confirm FFmpeg path and drivers.{" "}
+              {encoderDiscovery.parseNote ? `(${encoderDiscovery.parseNote})` : null}
+            </div>
+          ) : null}
+        </div>
+        <div style={{ marginBottom: 16 }}>
+          {fieldLabel("FFmpeg path (for discovery)", getMeta("obsFfmpegPaths.ffmpegPath").help)}
+          {looksLikeMpvExecutablePath(config.obsFfmpegPaths.ffmpegPath) ? (
+            <div style={{ color: "#a40000", marginBottom: 8, fontSize: 13, maxWidth: 640 }}>
+              This path is MPV. Set MPV under OBS / FFmpeg / Paths, and put your real{" "}
+              <code>ffmpeg.exe</code> here so Refresh device list and the encoder work.
+            </div>
+          ) : null}
+          <input
+            style={{ width: "100%", maxWidth: 640 }}
+            value={config.obsFfmpegPaths.ffmpegPath}
+            onChange={(e) =>
+              setConfig((prev) => ({
+                ...prev,
+                obsFfmpegPaths: { ...prev.obsFfmpegPaths, ffmpegPath: e.target.value },
+              }))
+            }
+          />
+          {encoderDiscovery?.ffmpegPathUsed ? (
+            <div style={{ fontSize: 11, color: "#666", marginTop: 4 }}>
+              Last discovery run used: {encoderDiscovery.ffmpegPathUsed}
+            </div>
+          ) : null}
+        </div>
+        <div style={{ marginBottom: 16 }}>
+          {fieldLabel(getMeta("encoder.uvcVideoDevice").label, getMeta("encoder.uvcVideoDevice").help)}
+          <input
+            list="encoder-video-devices-datalist"
+            style={{ width: "100%", maxWidth: 640 }}
+            value={config.encoder.uvcVideoDevice}
+            onChange={(e) => updateEncoder("uvcVideoDevice", e.target.value)}
+            placeholder="Pick from list or type (empty = .env / default)"
+            autoComplete="off"
+          />
+          <datalist id="encoder-video-devices-datalist">
+            {vids.map((d) => (
+              <option key={`v-${d.name}`} value={d.name} />
+            ))}
+          </datalist>
+        </div>
+        <div style={{ marginBottom: 16 }}>
+          {fieldLabel(getMeta("encoder.uvcAudioDevice").label, getMeta("encoder.uvcAudioDevice").help)}
+          <input
+            list="encoder-audio-devices-datalist"
+            style={{ width: "100%", maxWidth: 640 }}
+            value={config.encoder.uvcAudioDevice}
+            onChange={(e) => updateEncoder("uvcAudioDevice", e.target.value)}
+            placeholder="Pick from list or type (empty = .env / default)"
+            autoComplete="off"
+          />
+          <datalist id="encoder-audio-devices-datalist">
+            {auds.map((d) => (
+              <option key={`a-${d.name}`} value={d.name} />
+            ))}
+          </datalist>
+        </div>
+      </div>
+    );
+  }
+
+  function renderGeneralForm() {
+    const meta = (key: string) => getMeta(key);
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(280px, 1fr))", gap: 12 }}>
+        <div style={{ gridColumn: "1 / -1" }}>
+          {fieldLabel(meta("general.replayTroveRoot").label, meta("general.replayTroveRoot").help)}
+          <input
+            style={{ width: "100%", maxWidth: 720 }}
+            placeholder={meta("general.replayTroveRoot").placeholder}
+            value={config.general.replayTroveRoot}
+            onChange={(e) => updateGeneral("replayTroveRoot", e.target.value)}
+          />
+        </div>
+        <div>
+          {fieldLabel(meta("general.timezone").label, meta("general.timezone").help)}
+          <input
+            style={{ width: "100%", maxWidth: 480 }}
+            placeholder={meta("general.timezone").placeholder}
+            value={config.general.timezone}
+            onChange={(e) => updateGeneral("timezone", e.target.value)}
+          />
+        </div>
+        <div>
+          {fieldLabel(meta("general.operatorMode").label, meta("general.operatorMode").help)}
+          <select
+            style={{ width: "100%", maxWidth: 320, padding: 8 }}
+            value={config.general.operatorMode}
+            onChange={(e) =>
+              updateGeneral("operatorMode", e.target.value as AppConfig["general"]["operatorMode"])
+            }
+          >
+            <option value="appliance">appliance</option>
+            <option value="development">development</option>
+          </select>
+        </div>
+      </div>
+    );
+  }
+
+  function renderWebAppForm() {
+    const meta = (key: string) => getMeta(key);
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(280px, 1fr))", gap: 12 }}>
+        <div>
+          <label style={{ display: "block" }}>
+            <input
+              type="checkbox"
+              checked={config.webApp.enabled}
+              onChange={(e) => updateWebApp("enabled", e.target.checked)}
+            />{" "}
+            {meta("webApp.enabled").label}
+          </label>
+          {fieldHelp(meta("webApp.enabled").help)}
+        </div>
+        <div>
+          {fieldLabel(meta("webApp.port").label, meta("webApp.port").help)}
+          <input
+            type="number"
+            min={1}
+            max={65535}
+            style={{ width: "100%", maxWidth: 240 }}
+            value={config.webApp.port}
+            onChange={(e) => updateWebApp("port", Number(e.target.value) || 1)}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  function renderCleanerForm() {
+    const meta = (key: string) => getMeta(key);
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(280px, 1fr))", gap: 12 }}>
+        <div>
+          <label style={{ display: "block" }}>
+            <input
+              type="checkbox"
+              checked={config.cleaner.enabled}
+              onChange={(e) => updateCleaner("enabled", e.target.checked)}
+            />{" "}
+            {meta("cleaner.enabled").label}
+          </label>
+          {fieldHelp(meta("cleaner.enabled").help)}
+        </div>
+        <div>
+          {fieldLabel(meta("cleaner.maxLogAgeDays").label, meta("cleaner.maxLogAgeDays").help)}
+          <input
+            type="number"
+            min={1}
+            style={{ width: "100%", maxWidth: 240 }}
+            value={config.cleaner.maxLogAgeDays}
+            onChange={(e) => updateCleaner("maxLogAgeDays", Math.max(1, Number(e.target.value) || 1))}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  function renderObsFfmpegForm() {
+    const meta = (key: string) => getMeta(key);
+    return (
+      <div>
+        <p style={{ fontSize: 13, color: "#444", maxWidth: 720 }}>
+          Used by launcher, worker, scoreboard, and encoder device discovery. Save config and restart
+          affected services after changes.
+        </p>
+        <div style={{ marginBottom: 16 }}>
+          {fieldLabel(meta("obsFfmpegPaths.obsExecutable").label, meta("obsFfmpegPaths.obsExecutable").help)}
+          <input
+            style={{ width: "100%", maxWidth: 720 }}
+            value={config.obsFfmpegPaths.obsExecutable}
+            onChange={(e) => updateObsFfmpeg("obsExecutable", e.target.value)}
+          />
+        </div>
+        <div style={{ marginBottom: 16 }}>
+          {fieldLabel(meta("obsFfmpegPaths.ffmpegPath").label, meta("obsFfmpegPaths.ffmpegPath").help)}
+          {looksLikeMpvExecutablePath(config.obsFfmpegPaths.ffmpegPath) ? (
+            <div style={{ color: "#a40000", marginBottom: 8, fontSize: 13, maxWidth: 720 }}>
+              This path is MPV. Use the MPV field below for playback; this field must be{" "}
+              <code>ffmpeg.exe</code>.
+            </div>
+          ) : null}
+          <input
+            style={{ width: "100%", maxWidth: 720 }}
+            value={config.obsFfmpegPaths.ffmpegPath}
+            onChange={(e) => updateObsFfmpeg("ffmpegPath", e.target.value)}
+          />
+        </div>
+        <div style={{ marginBottom: 16 }}>
+          {fieldLabel(meta("obsFfmpegPaths.mpvPath").label, meta("obsFfmpegPaths.mpvPath").help)}
+          <input
+            style={{ width: "100%", maxWidth: 720 }}
+            value={config.obsFfmpegPaths.mpvPath}
+            onChange={(e) => updateObsFfmpeg("mpvPath", e.target.value)}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  function renderStorageForm() {
+    const meta = (key: string) => getMeta(key);
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(280px, 1fr))", gap: 12 }}>
+        <div>
+          {fieldLabel(meta("storage.s3PreviewPrefix").label, meta("storage.s3PreviewPrefix").help)}
+          <input
+            style={{ width: "100%", maxWidth: 480 }}
+            placeholder={meta("storage.s3PreviewPrefix").placeholder}
+            value={config.storage.s3PreviewPrefix}
+            onChange={(e) => updateStorage("s3PreviewPrefix", e.target.value)}
+          />
+        </div>
+        <div>
+          {fieldLabel(meta("storage.supabaseBookingsTable").label, meta("storage.supabaseBookingsTable").help)}
+          <input
+            style={{ width: "100%", maxWidth: 480 }}
+            placeholder={meta("storage.supabaseBookingsTable").placeholder}
+            value={config.storage.supabaseBookingsTable}
+            onChange={(e) => updateStorage("supabaseBookingsTable", e.target.value)}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  function renderPicklePlannerForm() {
+    const meta = (key: string) => getMeta(key);
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(280px, 1fr))", gap: 12 }}>
+        <div>
+          <label style={{ display: "block" }}>
+            <input
+              type="checkbox"
+              checked={config.picklePlanner.enabled}
+              onChange={(e) => updatePicklePlanner("enabled", e.target.checked)}
+            />{" "}
+            {meta("picklePlanner.enabled").label}
+          </label>
+          {fieldHelp(meta("picklePlanner.enabled").help)}
+        </div>
+        <div style={{ gridColumn: "1 / -1" }}>
+          {fieldLabel(meta("picklePlanner.baseUrl").label, meta("picklePlanner.baseUrl").help)}
+          <input
+            style={{ width: "100%", maxWidth: 720 }}
+            placeholder={meta("picklePlanner.baseUrl").placeholder}
+            value={config.picklePlanner.baseUrl}
+            onChange={(e) => updatePicklePlanner("baseUrl", e.target.value)}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  function renderSchemaForm() {
+    const meta = getMeta("schemaVersion");
+    return (
+      <div>
+        {fieldLabel(meta.label, meta.help)}
+        <input
+          type="number"
+          min={1}
+          step={1}
+          style={{ width: "100%", maxWidth: 200 }}
+          value={config.schemaVersion}
+          onChange={(e) =>
+            setConfig((prev) => ({
+              ...prev,
+              schemaVersion: Math.max(1, Math.floor(Number(e.target.value) || 1)),
+            }))
+          }
+        />
+      </div>
+    );
+  }
 
   function renderWorkerForm() {
     const renderMeta = (key: string) => {
@@ -1555,6 +2204,9 @@ function App() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(280px, 1fr))", gap: 12 }}>
             <div style={panelStyle}>
               <div style={{ fontWeight: 700, marginBottom: 6 }}>Replay pipeline readiness</div>
+              <div style={{ fontSize: 12, color: "#555", marginBottom: 8 }}>
+                Operator replay buttons / ports: <code style={{ fontSize: 11 }}>docs/operator-replay-trigger-runbook.md</code>
+              </div>
               <div>
                 Host: {systemStatus.replayReadiness.replayHttpHost.value}{" "}
                 {sourceBadge(systemStatus.replayReadiness.replayHttpHost.source)}
@@ -1650,11 +2302,27 @@ function App() {
             </div>
 
             <div style={panelStyle}>
-              <div style={{ fontWeight: 700, marginBottom: 6 }}>Launcher supervision</div>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>Launcher supervision and intent</div>
+              <div style={{ fontSize: 12, color: "#444", marginBottom: 8 }}>
+                Ownership from{" "}
+                {systemStatus.launcherSupervision.owner.leaseFileRelative ??
+                  "launcher/supervision_owner_lease.json"}
+                ; live health from{" "}
+                {systemStatus.launcherSupervision.supervisionStatusFileRelative ??
+                  "launcher/supervision_status.json"}
+                ; persisted desired state from{" "}
+                {systemStatus.launcherSupervision.desiredStatePersisted?.fileRelative ??
+                  "launcher/supervision_desired_state.json"}
+                .
+              </div>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>Ownership</div>
               <div>
                 Owner active: {systemStatus.launcherSupervision.owner.active ? "yes" : "no"}
               </div>
               <div>Lease status: {systemStatus.launcherSupervision.owner.state}</div>
+              <div>
+                Owner id: {systemStatus.launcherSupervision.owner.ownerId ?? "unknown"}
+              </div>
               <div>
                 Owner host/pid:{" "}
                 {systemStatus.launcherSupervision.owner.hostname ?? "unknown"} /{" "}
@@ -1664,30 +2332,89 @@ function App() {
                 Lease updated: {systemStatus.launcherSupervision.owner.updatedAt ?? "unknown"}
               </div>
               <div>
+                Lease timeout (sec):{" "}
+                {systemStatus.launcherSupervision.owner.leaseTimeoutSec ?? "unknown"}
+              </div>
+              <div>
                 Lease reason: {systemStatus.launcherSupervision.owner.reason ?? "unknown"}
               </div>
+              <div style={{ fontWeight: 600, margin: "10px 0 4px" }}>Persisted desired state</div>
+              {supervisionFreshnessLine(
+                "Desired-state file freshness",
+                systemStatus.launcherSupervision.artifactFreshness?.desiredState,
+              )}
+              <div>
+                Snapshot file:{" "}
+                {systemStatus.launcherSupervision.desiredStatePersisted?.fileRelative ??
+                  "launcher/supervision_desired_state.json"}
+              </div>
+              <div>
+                File state:{" "}
+                {systemStatus.launcherSupervision.desiredStatePersisted?.fileState ?? "unknown"}
+              </div>
+              <div>
+                Snapshot updated:{" "}
+                {systemStatus.launcherSupervision.desiredStatePersisted?.updatedAt ?? "unknown"}
+              </div>
+              <div>
+                Last change reason:{" "}
+                {systemStatus.launcherSupervision.desiredStatePersisted?.updateReason ?? "unknown"}
+              </div>
+              <div style={{ fontWeight: 600, margin: "10px 0 4px" }}>Supervision truth (last tick)</div>
+              {supervisionFreshnessLine(
+                "Supervision snapshot freshness",
+                systemStatus.launcherSupervision.artifactFreshness?.supervisionStatus,
+              )}
               <div>
                 Supervision snapshot timestamp:{" "}
                 {systemStatus.launcherSupervision.snapshotTimestamp ?? "unknown"}
               </div>
-              {Object.keys(systemStatus.launcherSupervision.components).length === 0 ? (
-                <div style={{ color: "#666" }}>Component supervision details unavailable.</div>
-              ) : (
-                <div style={{ marginTop: 6, fontSize: 12 }}>
-                  {Object.entries(systemStatus.launcherSupervision.components).map(
-                    ([name, info]) => (
-                      <div key={name} style={{ marginBottom: 6 }}>
-                        <div>
-                          {name}: {info.lastClassification ?? "unknown"}
-                        </div>
-                        <div>
-                          unhealthy/reason: {info.lastReason ?? "unknown"} | restart at:{" "}
-                          {info.lastRestartAt ?? "none"}
-                        </div>
-                        <div>restart reason: {info.lastRestartReason ?? "none"}</div>
+              <div style={{ fontSize: 11, color: "#666", marginBottom: 6 }}>
+                Per-component health below is only as current as the supervision snapshot. If the
+                snapshot is stale or missing, treat live classifications as non-authoritative.
+              </div>
+              {Array.isArray(systemStatus.launcherSupervision.managedComponents) &&
+              systemStatus.launcherSupervision.managedComponents.length > 0 ? (
+                <div style={{ marginTop: 8, fontSize: 12 }}>
+                  {systemStatus.launcherSupervision.managedComponents.map((row) => (
+                    <div
+                      key={row.name}
+                      style={{
+                        marginBottom: 10,
+                        paddingBottom: 8,
+                        borderBottom: "1px solid #e3e6eb",
+                      }}
+                    >
+                      <div style={{ fontWeight: 600 }}>{row.name}</div>
+                      <div style={{ fontSize: 11, color: "#555", marginBottom: 2 }}>
+                        Live row freshness: {row.liveRowFreshness ?? "unknown"}
+                        {row.liveRowFreshness === "stale"
+                          ? " (supervision tick or row observation is old)"
+                          : null}
+                        {row.liveRowFreshness === "unavailable"
+                          ? " (no usable supervision snapshot)"
+                          : null}
                       </div>
-                    ),
-                  )}
+                      <div>
+                        Desired (persisted): {row.desiredPersisted}
+                        {" · "}
+                        Desired (live tick): {row.desiredLive ?? "unknown"}
+                      </div>
+                      <div>Health: {row.lastClassification ?? "unknown"}</div>
+                      <div>Last unhealthy / probe reason: {row.lastReason ?? "unknown"}</div>
+                      <div>
+                        Unhealthy strikes:{" "}
+                        {row.consecutiveUnhealthy != null ? row.consecutiveUnhealthy : "unknown"}
+                      </div>
+                      <div>Last observed: {row.lastObservedAt ?? "unknown"}</div>
+                      <div>Last restart at: {row.lastRestartAt ?? "none"}</div>
+                      <div>Last restart reason: {row.lastRestartReason ?? "none"}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ color: "#666", marginTop: 6 }}>
+                  Managed component rows unavailable (API may be older).
                 </div>
               )}
             </div>
@@ -1733,26 +2460,52 @@ function App() {
 
       <h2>{SECTION_LABELS[active]}</h2>
       <p style={{ color: "#444" }}>
-        {["general", "worker", "scoreboard", "launcher", "obsFfmpegPaths"].includes(active)
+        {[
+          "general",
+          "webApp",
+          "worker",
+          "scoreboard",
+          "launcher",
+          "cleaner",
+          "obsFfmpegPaths",
+          "encoder",
+          "storage",
+          "picklePlanner",
+          "schemaVersion",
+        ].includes(active)
           ? "Restart required after save for most runtime apps."
           : "Usually safe without restart; app behavior depends on current runtime reload support."}
       </p>
       <div style={sectionCardStyle}>
+        {active === "general" ? renderGeneralForm() : null}
+        {active === "webApp" ? renderWebAppForm() : null}
+        {active === "cleaner" ? renderCleanerForm() : null}
+        {active === "obsFfmpegPaths" ? renderObsFfmpegForm() : null}
+        {active === "storage" ? renderStorageForm() : null}
+        {active === "picklePlanner" ? renderPicklePlannerForm() : null}
+        {active === "schemaVersion" ? renderSchemaForm() : null}
         {active === "worker" ? renderWorkerForm() : null}
         {active === "scoreboard" ? renderScoreboardForm() : null}
         {active === "launcher" ? renderLauncherForm() : null}
+        {active === "encoder" ? renderEncoderForm() : null}
       </div>
       <h3>Advanced JSON Editor</h3>
       <p style={{ fontSize: 12, color: "#555" }}>
-        Expert mode fallback. Use this for fields not surfaced in forms yet.
+        Expert fallback for keys not in the form above. Edits stay in the box until you apply; invalid JSON
+        is not written to the draft config.
       </p>
       <textarea
         style={{ width: "100%", minHeight: 260, fontFamily: "Consolas, monospace", borderRadius: 8, border: "1px solid #d9dde4", padding: 10 }}
-        value={sectionText}
-        onChange={(e) => setSectionFromText(active, e.target.value)}
+        value={jsonDraft}
+        onChange={(e) => setJsonDraft(e.target.value)}
       />
-      <div style={{ marginTop: 10 }}>
-        <button onClick={() => resetSection(active)}>Reset Section To Defaults</button>
+      <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button type="button" onClick={() => applyJsonDraft(active)}>
+          Apply JSON to section
+        </button>
+        <button type="button" onClick={() => resetSection(active)}>
+          Reset Section To Defaults
+        </button>
       </div>
       <h2>Diagnostics</h2>
       <div style={panelStyle}>

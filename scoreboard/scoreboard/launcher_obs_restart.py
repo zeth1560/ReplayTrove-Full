@@ -1,4 +1,13 @@
-"""Spawn ReplayTrove launcher ``restart_obs.ps1`` (same OBS flags as launcher_ui)."""
+"""Launcher OBS restart: spawn ``restart_obs.ps1`` or suppress when supervision owns the lease.
+
+**Lease-aware suppression:** If ``supervision_owner_lease.json`` indicates an active launcher
+supervision owner, the scoreboard does **not** spawn ``restart_obs.ps1`` (avoids competing
+stop/start with the launcher's launcher-owned OBS lifecycle). Expect the launcher supervision
+loop to recover OBS; see logs for ``Launcher OBS restart suppressed``.
+
+**Direct spawn:** When no active lease, runs the same PowerShell path as ``launcher_ui``
+(stop obs64, sentinel, start OBS with matching flags).
+"""
 
 from __future__ import annotations
 
@@ -80,7 +89,7 @@ def _launcher_supervision_owner_active(settings: Settings) -> bool:
 
 def request_launcher_obs_restart(settings: Settings, reason: str) -> None:
     """
-    Non-blocking: start PowerShell to run the launcher script (stop obs64, sentinel, start OBS).
+    Non-blocking: spawn the launcher OBS restart script, or no-op when supervision holds the lease.
 
     Only when ``replay_launcher_restart_obs_on_unavailable`` is true and ``os.name == 'nt'``.
     """
@@ -91,8 +100,8 @@ def request_launcher_obs_restart(settings: Settings, reason: str) -> None:
         return
     if _launcher_supervision_owner_active(settings):
         _LOG.warning(
-            "Launcher OBS restart direct spawn disabled: active launcher supervision owner detected; "
-            "using launcher restart signal only reason=%r",
+            "Launcher OBS restart suppressed: active launcher supervision lease "
+            "(scoreboard does not spawn restart_obs.ps1; launcher-owned OBS lifecycle). reason=%r",
             reason,
         )
         if not settings.launcher_status_enabled:

@@ -62,3 +62,113 @@
 2026-04-22 01:46:41.255 cid=2ede6bd384574d3eb3cec5be79a86b98  ERROR: Exception calling "GetResult" with "0" argument(s): "Unable to connect to the remote server"
 2026-04-22 01:47:41.156 cid=dae008a89e864d4689df368ef15d9868  Starting OBS save replay request
 2026-04-22 01:47:43.232 cid=dae008a89e864d4689df368ef15d9868  ERROR: Exception calling "GetResult" with "0" argument(s): "Unable to connect to the remote server"
+2026-04-22 12:10:51.506 cid=aeb181120f704b648a96ca71b9c51085  Starting OBS save replay request
+2026-04-22 12:10:55.601 cid=aeb181120f704b648a96ca71b9c51085  ERROR: Exception calling "GetResult" with "0" argument(s): "Unable to connect to the remote server"
+2026-04-22 14:16:21.707 cid=3fbb8a3c936d4d1abcf9bbb516a43020  Starting OBS save replay request
+2026-04-22 14:16:21.832 cid=3fbb8a3c936d4d1abcf9bbb516a43020  Connected to OBS websocket
+2026-04-22 14:16:21.858 cid=3fbb8a3c936d4d1abcf9bbb516a43020  Hello: {"d":{"authentication":{"challenge":"5iYmbO+p35A6CvLob7WVOUGcw6vXTNv9uOqFnUkd0lA=","salt":"MAS+jvRm8oJv++dtvyZfLxElP9d0vKT1GGOZ+e5lj/Q="},"obsStudioVersion":"32.1.2","obsWebSocketVersion":"5.7.3","rpcVersion":1},"op":0}
+2026-04-22 14:16:21.921 cid=3fbb8a3c936d4d1abcf9bbb516a43020  Auth challenge received; auth response generated
+2026-04-22 14:16:21.938 cid=3fbb8a3c936d4d1abcf9bbb516a43020  Identify sent
+2026-04-22 14:16:21.940 cid=3fbb8a3c936d4d1abcf9bbb516a43020  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-22 14:16:21.948 cid=3fbb8a3c936d4d1abcf9bbb516a43020  SaveReplayBuffer request sent
+2026-04-22 14:16:21.950 cid=3fbb8a3c936d4d1abcf9bbb516a43020  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-22 14:16:21.955 cid=3fbb8a3c936d4d1abcf9bbb516a43020  OBS replay buffer save succeeded
+2026-04-22 14:37:48.260 cid=da8cb3e35cd840dda3b9bfc3818bc18f  Starting OBS save replay request
+2026-04-22 14:37:48.353 cid=da8cb3e35cd840dda3b9bfc3818bc18f  Connected to OBS websocket
+2026-04-22 14:37:48.378 cid=da8cb3e35cd840dda3b9bfc3818bc18f  Hello: {"d":{"authentication":{"challenge":"HKzANsAdgFPaY9NqccwvagastTV485r87oS9WjEDQY0=","salt":"cPV55D6FaG+NtB62gPhVN1IL92WDkEgroAmFlJXYroA="},"obsStudioVersion":"32.1.2","obsWebSocketVersion":"5.7.3","rpcVersion":1},"op":0}
+2026-04-22 14:37:48.461 cid=da8cb3e35cd840dda3b9bfc3818bc18f  Auth challenge received; auth response generated
+2026-04-22 14:37:48.474 cid=da8cb3e35cd840dda3b9bfc3818bc18f  Identify sent
+2026-04-22 14:37:48.477 cid=da8cb3e35cd840dda3b9bfc3818bc18f  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-22 14:37:48.484 cid=da8cb3e35cd840dda3b9bfc3818bc18f  SaveReplayBuffer request sent
+2026-04-22 14:37:48.487 cid=da8cb3e35cd840dda3b9bfc3818bc18f  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-22 14:37:48.491 cid=da8cb3e35cd840dda3b9bfc3818bc18f  OBS replay buffer save succeeded
+2026-04-22 14:45:59.958 cid=992875b0be0947b0bc80b622bb7c7c07  Starting OBS save replay request
+2026-04-22 14:46:00.082 cid=992875b0be0947b0bc80b622bb7c7c07  Connected to OBS websocket
+2026-04-22 14:46:00.104 cid=992875b0be0947b0bc80b622bb7c7c07  Hello: {"d":{"authentication":{"challenge":"8pRyORhvu4jWnaI1exyFpn9BegURom3NV5g8TGrZzpI=","salt":"GhxfOhaXF6JHtUqoceEiu1d5ttjg+1/plMxXZ8gmspw="},"obsStudioVersion":"32.1.2","obsWebSocketVersion":"5.7.3","rpcVersion":1},"op":0}
+2026-04-22 14:46:00.205 cid=992875b0be0947b0bc80b622bb7c7c07  Auth challenge received; auth response generated
+2026-04-22 14:46:00.252 cid=992875b0be0947b0bc80b622bb7c7c07  Identify sent
+2026-04-22 14:46:00.255 cid=992875b0be0947b0bc80b622bb7c7c07  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-22 14:46:00.265 cid=992875b0be0947b0bc80b622bb7c7c07  SaveReplayBuffer request sent
+2026-04-22 14:46:00.268 cid=992875b0be0947b0bc80b622bb7c7c07  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-22 14:46:00.276 cid=992875b0be0947b0bc80b622bb7c7c07  OBS replay buffer save succeeded
+2026-04-22 14:47:59.616 cid=e1ee16a77ee2478d8bdd2c958ca78d5a  Starting OBS save replay request
+2026-04-22 14:47:59.709 cid=e1ee16a77ee2478d8bdd2c958ca78d5a  Connected to OBS websocket
+2026-04-22 14:47:59.727 cid=e1ee16a77ee2478d8bdd2c958ca78d5a  Hello: {"d":{"authentication":{"challenge":"ekSA9zbbZONml40wqRltzr47a6MvC2UxaAZiAbnCqQU=","salt":"GhxfOhaXF6JHtUqoceEiu1d5ttjg+1/plMxXZ8gmspw="},"obsStudioVersion":"32.1.2","obsWebSocketVersion":"5.7.3","rpcVersion":1},"op":0}
+2026-04-22 14:47:59.800 cid=e1ee16a77ee2478d8bdd2c958ca78d5a  Auth challenge received; auth response generated
+2026-04-22 14:47:59.832 cid=e1ee16a77ee2478d8bdd2c958ca78d5a  Identify sent
+2026-04-22 14:47:59.835 cid=e1ee16a77ee2478d8bdd2c958ca78d5a  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-22 14:47:59.843 cid=e1ee16a77ee2478d8bdd2c958ca78d5a  SaveReplayBuffer request sent
+2026-04-22 14:47:59.845 cid=e1ee16a77ee2478d8bdd2c958ca78d5a  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-22 14:47:59.851 cid=e1ee16a77ee2478d8bdd2c958ca78d5a  OBS replay buffer save succeeded
+2026-04-22 14:51:10.353 cid=e82d93eeb06f4483a56d864da9d3b8d6  Starting OBS save replay request
+2026-04-22 14:51:10.444 cid=e82d93eeb06f4483a56d864da9d3b8d6  Connected to OBS websocket
+2026-04-22 14:51:10.461 cid=e82d93eeb06f4483a56d864da9d3b8d6  Hello: {"d":{"authentication":{"challenge":"2RYPx/QRa+4zhd0RK6D069KTVJ8BBfU/xEMYGAC96jY=","salt":"GhxfOhaXF6JHtUqoceEiu1d5ttjg+1/plMxXZ8gmspw="},"obsStudioVersion":"32.1.2","obsWebSocketVersion":"5.7.3","rpcVersion":1},"op":0}
+2026-04-22 14:51:10.520 cid=e82d93eeb06f4483a56d864da9d3b8d6  Auth challenge received; auth response generated
+2026-04-22 14:51:10.543 cid=e82d93eeb06f4483a56d864da9d3b8d6  Identify sent
+2026-04-22 14:51:10.544 cid=e82d93eeb06f4483a56d864da9d3b8d6  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-22 14:51:10.551 cid=e82d93eeb06f4483a56d864da9d3b8d6  SaveReplayBuffer request sent
+2026-04-22 14:51:10.553 cid=e82d93eeb06f4483a56d864da9d3b8d6  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-22 14:51:10.557 cid=e82d93eeb06f4483a56d864da9d3b8d6  OBS replay buffer save succeeded
+2026-04-22 15:05:44.120 cid=1d72192fc0d148f89fe40cec99702930  Starting OBS save replay request (in-process)
+2026-04-22 15:05:44.172 cid=1d72192fc0d148f89fe40cec99702930  Connected to OBS websocket
+2026-04-22 15:05:44.190 cid=1d72192fc0d148f89fe40cec99702930  Hello: {"d":{"authentication":{"challenge":"7UygnQhIrrWum+2tTYAaOAPd9kJP+VsvUksmeLZ+FNA=","salt":"GhxfOhaXF6JHtUqoceEiu1d5ttjg+1/plMxXZ8gmspw="},"obsStudioVersion":"32.1.2","obsWebSocketVersion":"5.7.3","rpcVersion":1},"op":0}
+2026-04-22 15:05:44.217 cid=1d72192fc0d148f89fe40cec99702930  Auth challenge received; auth response generated
+2026-04-22 15:05:44.245 cid=1d72192fc0d148f89fe40cec99702930  Identify sent
+2026-04-22 15:05:44.248 cid=1d72192fc0d148f89fe40cec99702930  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-22 15:05:44.254 cid=1d72192fc0d148f89fe40cec99702930  SaveReplayBuffer request sent
+2026-04-22 15:05:44.257 cid=1d72192fc0d148f89fe40cec99702930  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-22 15:05:44.262 cid=1d72192fc0d148f89fe40cec99702930  OBS replay buffer save succeeded
+2026-04-22 15:09:58.770 cid=135ec73ca4eb464f847207885579ac1b  Starting OBS save replay request (in-process)
+2026-04-22 15:09:58.809 cid=135ec73ca4eb464f847207885579ac1b  Connected to OBS websocket
+2026-04-22 15:09:58.834 cid=135ec73ca4eb464f847207885579ac1b  Hello: {"d":{"authentication":{"challenge":"i9KNHLcXsjzK29uR09CR1PoQTNienGenqU2lMXYL4do=","salt":"GhxfOhaXF6JHtUqoceEiu1d5ttjg+1/plMxXZ8gmspw="},"obsStudioVersion":"32.1.2","obsWebSocketVersion":"5.7.3","rpcVersion":1},"op":0}
+2026-04-22 15:09:58.856 cid=135ec73ca4eb464f847207885579ac1b  Auth challenge received; auth response generated
+2026-04-22 15:09:58.869 cid=135ec73ca4eb464f847207885579ac1b  Identify sent
+2026-04-22 15:09:58.872 cid=135ec73ca4eb464f847207885579ac1b  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-22 15:09:58.876 cid=135ec73ca4eb464f847207885579ac1b  SaveReplayBuffer request sent
+2026-04-22 15:09:58.878 cid=135ec73ca4eb464f847207885579ac1b  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-22 15:09:58.883 cid=135ec73ca4eb464f847207885579ac1b  OBS replay buffer save succeeded
+2026-04-22 15:10:58.867 cid=ca094756c4f64f3299e9ab59eebec9a5  Starting OBS save replay request (in-process)
+2026-04-22 15:10:58.912 cid=ca094756c4f64f3299e9ab59eebec9a5  Connected to OBS websocket
+2026-04-22 15:10:58.929 cid=ca094756c4f64f3299e9ab59eebec9a5  Hello: {"d":{"authentication":{"challenge":"4ge/cbVuANhEh2JIvrWCSqONnl80R/fbeQcepr0ah1E=","salt":"GhxfOhaXF6JHtUqoceEiu1d5ttjg+1/plMxXZ8gmspw="},"obsStudioVersion":"32.1.2","obsWebSocketVersion":"5.7.3","rpcVersion":1},"op":0}
+2026-04-22 15:10:58.952 cid=ca094756c4f64f3299e9ab59eebec9a5  Auth challenge received; auth response generated
+2026-04-22 15:10:58.965 cid=ca094756c4f64f3299e9ab59eebec9a5  Identify sent
+2026-04-22 15:10:58.971 cid=ca094756c4f64f3299e9ab59eebec9a5  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-22 15:10:58.976 cid=ca094756c4f64f3299e9ab59eebec9a5  SaveReplayBuffer request sent
+2026-04-22 15:10:58.979 cid=ca094756c4f64f3299e9ab59eebec9a5  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-22 15:10:58.984 cid=ca094756c4f64f3299e9ab59eebec9a5  OBS replay buffer save succeeded
+2026-04-22 15:11:00.451 cid=47104438298d418f9b110ba319e35a2a  Starting OBS save replay request (in-process)
+2026-04-22 15:11:00.488 cid=47104438298d418f9b110ba319e35a2a  Connected to OBS websocket
+2026-04-22 15:11:00.502 cid=47104438298d418f9b110ba319e35a2a  Hello: {"d":{"authentication":{"challenge":"4KhYmc48eo/PB2Z+DTCAIxA8wvX5tqSJf4WXaoKxiDI=","salt":"GhxfOhaXF6JHtUqoceEiu1d5ttjg+1/plMxXZ8gmspw="},"obsStudioVersion":"32.1.2","obsWebSocketVersion":"5.7.3","rpcVersion":1},"op":0}
+2026-04-22 15:11:00.518 cid=47104438298d418f9b110ba319e35a2a  Auth challenge received; auth response generated
+2026-04-22 15:11:00.527 cid=47104438298d418f9b110ba319e35a2a  Identify sent
+2026-04-22 15:11:00.533 cid=47104438298d418f9b110ba319e35a2a  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-22 15:11:00.540 cid=47104438298d418f9b110ba319e35a2a  SaveReplayBuffer request sent
+2026-04-22 15:11:00.544 cid=47104438298d418f9b110ba319e35a2a  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-22 15:11:00.550 cid=47104438298d418f9b110ba319e35a2a  OBS replay buffer save succeeded
+2026-04-22 15:19:04.227 cid=5795be8d485b4c1a970d48c81c1fb26f  Starting OBS save replay request (in-process)
+2026-04-22 15:19:04.264 cid=5795be8d485b4c1a970d48c81c1fb26f  Connected to OBS websocket
+2026-04-22 15:19:04.280 cid=5795be8d485b4c1a970d48c81c1fb26f  Hello: {"d":{"authentication":{"challenge":"kkCt24YicYYHhb6pV1pvbYH0aj1RvNGU0MudJgYtppg=","salt":"GhxfOhaXF6JHtUqoceEiu1d5ttjg+1/plMxXZ8gmspw="},"obsStudioVersion":"32.1.2","obsWebSocketVersion":"5.7.3","rpcVersion":1},"op":0}
+2026-04-22 15:19:04.299 cid=5795be8d485b4c1a970d48c81c1fb26f  Auth challenge received; auth response generated
+2026-04-22 15:19:04.323 cid=5795be8d485b4c1a970d48c81c1fb26f  Identify sent
+2026-04-22 15:19:04.325 cid=5795be8d485b4c1a970d48c81c1fb26f  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-22 15:19:04.329 cid=5795be8d485b4c1a970d48c81c1fb26f  SaveReplayBuffer request sent
+2026-04-22 15:19:04.333 cid=5795be8d485b4c1a970d48c81c1fb26f  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-22 15:19:04.337 cid=5795be8d485b4c1a970d48c81c1fb26f  OBS replay buffer save succeeded
+2026-04-22 15:23:02.007 cid=59187ec729ac4047bb3be2741aa3981e  Starting OBS save replay request (in-process)
+2026-04-22 15:23:02.041 cid=59187ec729ac4047bb3be2741aa3981e  Connected to OBS websocket
+2026-04-22 15:23:02.055 cid=59187ec729ac4047bb3be2741aa3981e  Hello: {"d":{"authentication":{"challenge":"bJtnABq4xsJoNIVlznjcdCkAZyrdQCByyeU5Al8zWO4=","salt":"GhxfOhaXF6JHtUqoceEiu1d5ttjg+1/plMxXZ8gmspw="},"obsStudioVersion":"32.1.2","obsWebSocketVersion":"5.7.3","rpcVersion":1},"op":0}
+2026-04-22 15:23:02.069 cid=59187ec729ac4047bb3be2741aa3981e  Auth challenge received; auth response generated
+2026-04-22 15:23:02.079 cid=59187ec729ac4047bb3be2741aa3981e  Identify sent
+2026-04-22 15:23:02.082 cid=59187ec729ac4047bb3be2741aa3981e  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-22 15:23:02.087 cid=59187ec729ac4047bb3be2741aa3981e  SaveReplayBuffer request sent
+2026-04-22 15:23:02.089 cid=59187ec729ac4047bb3be2741aa3981e  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-22 15:23:02.092 cid=59187ec729ac4047bb3be2741aa3981e  OBS replay buffer save succeeded
+2026-04-22 15:26:28.511 cid=3cb695f212c64aa28028b893c2183b6d  Starting OBS save replay request (in-process)
+2026-04-22 15:26:28.556 cid=3cb695f212c64aa28028b893c2183b6d  Connected to OBS websocket
+2026-04-22 15:26:28.573 cid=3cb695f212c64aa28028b893c2183b6d  Hello: {"d":{"authentication":{"challenge":"g5wx5Il0RW9tFhSgz+3JXTOCCgu+YfhoENxhiI7kCDM=","salt":"GhxfOhaXF6JHtUqoceEiu1d5ttjg+1/plMxXZ8gmspw="},"obsStudioVersion":"32.1.2","obsWebSocketVersion":"5.7.3","rpcVersion":1},"op":0}
+2026-04-22 15:26:28.594 cid=3cb695f212c64aa28028b893c2183b6d  Auth challenge received; auth response generated
+2026-04-22 15:26:28.607 cid=3cb695f212c64aa28028b893c2183b6d  Identify sent
+2026-04-22 15:26:28.611 cid=3cb695f212c64aa28028b893c2183b6d  Identify response: {"d":{"negotiatedRpcVersion":1},"op":2}
+2026-04-22 15:26:28.617 cid=3cb695f212c64aa28028b893c2183b6d  SaveReplayBuffer request sent
+2026-04-22 15:26:28.620 cid=3cb695f212c64aa28028b893c2183b6d  SaveReplayBuffer response: {"d":{"requestId":"save-replay-buffer","requestStatus":{"code":100,"result":true},"requestType":"SaveReplayBuffer"},"op":7}
+2026-04-22 15:26:28.624 cid=3cb695f212c64aa28028b893c2183b6d  OBS replay buffer save succeeded

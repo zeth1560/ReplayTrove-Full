@@ -26,7 +26,7 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-_jsonl = logging.getLogger("replaytrove.encoder.jsonl")
+_log = logging.getLogger("replaytrove.encoder.flight")
 
 
 class FlightJsonlEmitter:
@@ -62,7 +62,11 @@ class FlightJsonlEmitter:
         }
         if data:
             payload["data"] = data
-        _jsonl.info(json.dumps(payload, ensure_ascii=True))
+        _log.log(
+            logging.INFO,
+            message,
+            extra={"replaytrove_flight_event": payload},
+        )
 
 
 _STREAM_VIDEO_RE = re.compile(

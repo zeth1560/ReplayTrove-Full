@@ -122,7 +122,7 @@ $LauncherUiPs1 = Join-Path $PSScriptRoot 'launcher_ui.ps1'
 $SupervisionOwnerLeasePath = Join-Path $PSScriptRoot 'supervision_owner_lease.json'
 $SupervisionStatusPath = Join-Path $PSScriptRoot 'supervision_status.json'
 $SupervisionStatusStaleSec = 15
-$LauncherManagedApps = @('Worker', 'logs2dropbox', 'Encoder', 'OBS', 'Scoreboard')
+$LauncherManagedApps = @('Worker', 'Encoder', 'OBS', 'Scoreboard')
 $LauncherIntentsRoot = Join-Path $PSScriptRoot 'intents'
 $LauncherIntentsPendingDir = Join-Path $LauncherIntentsRoot 'pending'
 
@@ -233,7 +233,6 @@ function Get-ManagedTargetName {
     'Scoreboard' { return 'scoreboard' }
     'OBS' { return 'obs' }
     'Encoder' { return 'encoder_watchdog' }
-    'logs2dropbox' { return 'logs2dropbox' }
     default { return $null }
   }
 }
@@ -338,13 +337,6 @@ $apps = @(
     IsRunning = { Test-PythonScriptRunning -FolderPath 'C:\ReplayTrove\worker' -ScriptName 'main.py' }
     Start = { Start-PythonScript -FolderPath 'C:\ReplayTrove\worker' -ScriptName 'main.py' }
     Stop = { Stop-ProcessList -Processes (Get-MatchingPythonProcesses -FolderPath 'C:\ReplayTrove\worker' -ScriptName 'main.py') }
-  }
-  @{
-    Name = 'logs2dropbox'
-    Env = 'REPLAYTROVE_ENABLE_LOGS2DROPBOX'
-    IsRunning = { Test-PythonScriptRunning -FolderPath 'C:\ReplayTrove\logs2dropbox' -ScriptName 'main.py' }
-    Start = { Start-PythonScript -FolderPath 'C:\ReplayTrove\logs2dropbox' -ScriptName 'main.py' }
-    Stop = { Stop-ProcessList -Processes (Get-MatchingPythonProcesses -FolderPath 'C:\ReplayTrove\logs2dropbox' -ScriptName 'main.py') }
   }
   @{
     Name = 'Encoder'

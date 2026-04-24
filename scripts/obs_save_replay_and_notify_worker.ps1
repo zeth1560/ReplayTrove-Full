@@ -5,8 +5,10 @@
 
 .DESCRIPTION
   Preserves the existing interface for external callers (Stream Deck, launchers), but
-  delegates to the canonical replay entrypoint:
-    scripts/save_replay_and_trigger.ps1
+  delegates to the canonical replay entrypoint scripts/save_replay_and_trigger.ps1
+  (OBS SaveReplay + worker + scoreboard replay_on on success — full pipeline).
+
+  Prefer that script (or docs/operator-replay-trigger-runbook.md) for new wiring.
 #>
 param(
     [string] $ObsHost = '127.0.0.1',
@@ -33,12 +35,12 @@ if (-not (Test-Path -LiteralPath $canonicalScript)) {
 
 $args = @(
     '-NoProfile',
+    '-WindowStyle', 'Hidden',
     '-ExecutionPolicy', 'Bypass',
     '-File', $canonicalScript,
     '-ObsHost', $ObsHost,
     '-ObsPort', ([string]$Port),
-    '-ObsPassword', $Password,
-    '-SkipScoreboardReplayOn'
+    '-ObsPassword', $Password
 )
 if ($WorkerHttp) {
     if ($HttpPort -le 0) {
@@ -58,5 +60,5 @@ else {
     )
 }
 
-$proc = Start-Process -FilePath powershell.exe -ArgumentList $args -Wait -PassThru
+$proc = Start-Process -FilePath powershell.exe -ArgumentList $args -WindowStyle Hidden -Wait -PassThru
 exit $proc.ExitCode

@@ -12,6 +12,8 @@
 
   Existing scripts are intentionally left in place for compatibility; this script is the
   authoritative path for reliable replay triggering.
+
+  Operator / installer guide: docs/operator-replay-trigger-runbook.md
 #>
 param(
     [string] $ObsHost = "",
@@ -31,8 +33,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+. (Join-Path (Split-Path -Parent $PSScriptRoot) "launcher\unified_config_adapter.ps1")
+. (Join-Path $PSScriptRoot "replaytrove_json_log.ps1")
+. (Join-Path $PSScriptRoot "obs_save_replay_core.ps1")
+
 $stateDir = "C:\ReplayTrove\state"
-$logPath = Join-Path $stateDir "save_replay_and_trigger_log.txt"
 $cid = [guid]::NewGuid().ToString("N")
 $utcNow = [DateTimeOffset]::UtcNow
 $triggerUnix = $utcNow.ToUnixTimeSeconds()
@@ -40,11 +45,10 @@ $script:WorkerCanonicalTrustCategory = "legacy_noncanonical"
 $script:WorkerCanonicalTrustReason = "worker_not_contacted"
 
 function Write-ReplayLog([string] $Message) {
-    if (-not (Test-Path -LiteralPath $stateDir)) {
-        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+    Write-ReplayTroveJsonl -Component 'scripts' -ScriptName 'save_replay_and_trigger.ps1' -Event 'replay_pipeline' -Level 'INFO' -Message $Message -Data @{
+        correlation_id = $cid
+        detail         = $Message
     }
-    $stamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss.fff")
-    Add-Content -LiteralPath $logPath -Value "$stamp cid=$cid  $Message"
 }
 
 function Resolve-SettingSource([string] $ParamName, [string] $EnvName) {
@@ -87,7 +91,8 @@ function Load-UnifiedSettings {
     $snapshot.Found = $true
     try {
         $raw = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8
-        $obj = $raw | ConvertFrom-Json -AsHashtable
+        $parsed = $raw | ConvertFrom-Json
+        $obj = ConvertTo-NestedHashtable -Node $parsed
         if ($obj -is [System.Collections.IDictionary]) {
             $snapshot.Data = $obj
         }
@@ -157,27 +162,22 @@ function Resolve-ReplayIntSetting {
 }
 
 function Invoke-ObsSaveReplay {
-    $saveScript = Join-Path $PSScriptRoot "obs_save_replay.ps1"
-    $args = @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", $saveScript,
-        "-ObsHost", $ObsHost,
-        "-Port", ([string]$ObsPort),
-        "-CorrelationId", $cid
-    )
     if ([string]::IsNullOrWhiteSpace($ObsPassword)) {
         Write-ReplayLog "stage=obs_save password_missing=true note=attempting_without_password_if_obs_requires_auth_this_will_fail"
     }
-    else {
-        $args += @("-Password", $ObsPassword)
+    Write-ReplayLog "stage=obs_save start in_process=true host=$ObsHost port=$ObsPort"
+    try {
+        Invoke-ReplayTroveObsSaveReplayBuffer `
+            -ObsHost $ObsHost `
+            -Port $ObsPort `
+            -Password $ObsPassword `
+            -CorrelationId $cid
     }
-    Write-ReplayLog "stage=obs_save start script=$saveScript host=$ObsHost port=$ObsPort"
-    $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $args -Wait -PassThru
-    Write-ReplayLog "stage=obs_save exit_code=$($proc.ExitCode)"
-    if ($proc.ExitCode -ne 0) {
-        throw "obs_save_replay failed (exit_code=$($proc.ExitCode))"
+    catch {
+        Write-ReplayLog "stage=obs_save error=$($_.Exception.Message)"
+        throw "obs_save_replay failed: $($_.Exception.Message)"
     }
+    Write-ReplayLog "stage=obs_save ok"
 }
 
 function Invoke-WorkerReplayTrigger {
@@ -208,7 +208,9 @@ function Invoke-WorkerReplayTrigger {
         $headers["X-Replay-Canonical-Token"] = $ReplayCanonicalToken
     }
     try {
-        $http = Invoke-WebRequest -Uri $uri -Method Get -Headers $headers -TimeoutSec $WorkerReplayTimeoutSec
+        # Windows PowerShell 5.1: without -UseBasicParsing, IWR can throw NullReferenceException
+        # when the legacy HTML parser (MSHTML) is unavailable or misconfigured (common on appliances).
+        $http = Invoke-WebRequest -UseBasicParsing -Uri $uri -Method Get -Headers $headers -TimeoutSec $WorkerReplayTimeoutSec
     }
     catch {
         Write-ReplayLog "stage=worker_trigger transport_error=$($_.Exception.Message)"
@@ -260,7 +262,20 @@ function Invoke-ScoreboardReplayOn {
     } | ConvertTo-Json -Compress
     Write-ReplayLog "stage=scoreboard_replay_on start script=$sendScript"
     & $sendScript -Target "scoreboard" -Action "replay_on" -ArgsJson $argsPayload
-    $sendExit = if (Test-Path variable:LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }
+    # LASTEXITCODE is unset under StrictMode if the child script exits without a native exit code;
+    # send_command.ps1 now ends with explicit exit 0. Treat unset as 0 only when $? is true.
+    $sendExit = 0
+    if (-not $?) {
+        $sendExit = 1
+    }
+    else {
+        try {
+            $sendExit = [int]$LASTEXITCODE
+        }
+        catch {
+            $sendExit = 0
+        }
+    }
     Write-ReplayLog "stage=scoreboard_replay_on exit_code=$sendExit"
     if ($sendExit -ne 0) {
         throw "send_command replay_on failed (exit_code=$sendExit)"

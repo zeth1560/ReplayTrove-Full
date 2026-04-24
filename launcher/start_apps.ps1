@@ -4,7 +4,8 @@
   ReplayTrove launcher / supervisor: start apps, wait for readiness, validate processes, UI tweaks.
 
   Configure paths via environment (set in start_apps.bat) or defaults below.
-  REPLAYTROVE_LAUNCHER_DEBUG=1  -> use python.exe and normal windows for Python apps.
+  REPLAYTROVE_LAUNCHER_DEBUG=1  -> python.exe + Normal windows (easier troubleshooting).
+  Production: pythonw; worker/encoder Hidden; scoreboard Minimized (Tk must not use Hidden); OBS Normal.
   REPLAYTROVE_PAUSE_ON_ERROR=0 -> do not pause on validation failure (e.g. scheduled task).
 
   When Scoreboard, Encoder, and OBS are all enabled, an interactive session keeps running after
@@ -36,9 +37,6 @@ $script:UnifiedResolutionNotes += "$($WorkerDirObj.Label)=$($WorkerDirObj.Source
 $ScoreboardDirObj = Resolve-UnifiedFirstString -UnifiedData $UnifiedData -UnifiedPath 'launcher.scoreboardDir' -EnvName 'REPLAYTROVE_SCOREBOARD_DIR' -Default (Join-Path $UnifiedRoot 'scoreboard') -Label 'ScoreboardDir'
 $ScoreboardDir = $ScoreboardDirObj.Value
 $script:UnifiedResolutionNotes += "$($ScoreboardDirObj.Label)=$($ScoreboardDirObj.Source)"
-$Logs2DropboxDirObj = Resolve-UnifiedFirstString -UnifiedData $UnifiedData -UnifiedPath 'launcher.logs2DropboxDir' -EnvName 'REPLAYTROVE_LOGS2DROPBOX_DIR' -Default (Join-Path $UnifiedRoot 'logs2dropbox') -Label 'Logs2DropboxDir'
-$Logs2DropboxDir = $Logs2DropboxDirObj.Value
-$script:UnifiedResolutionNotes += "$($Logs2DropboxDirObj.Label)=$($Logs2DropboxDirObj.Source)"
 $EncoderDirObj = Resolve-UnifiedFirstString -UnifiedData $UnifiedData -UnifiedPath 'launcher.encoderDir' -EnvName 'REPLAYTROVE_ENCODER_DIR' -Default (Join-Path $UnifiedRoot 'encoder') -Label 'EncoderDir'
 $EncoderDir = $EncoderDirObj.Value
 $script:UnifiedResolutionNotes += "$($EncoderDirObj.Label)=$($EncoderDirObj.Source)"
@@ -55,7 +53,8 @@ $ObsExeObj = Resolve-UnifiedFirstString -UnifiedData $UnifiedData -UnifiedPath '
 $ObsExe = $ObsExeObj.Value
 $script:UnifiedResolutionNotes += "$($ObsExeObj.Label)=$($ObsExeObj.Source)"
 $ObsSentinelObj = Resolve-UnifiedFirstString -UnifiedData $UnifiedData -UnifiedPath 'launcher.obsSentinelPath' -EnvName 'REPLAYTROVE_OBS_SENTINEL' -Default (Join-Path $env:APPDATA 'obs-studio\.sentinel') -Label 'ObsSentinel'
-$ObsSentinel = $ObsSentinelObj.Value
+# Config stores e.g. %APPDATA%\obs-studio\.sentinel — must expand or OBS keeps the crash sentinel and shows Safe/Normal mode (OBS 32+ removed --disable-shutdown-check).
+$ObsSentinel = [Environment]::ExpandEnvironmentVariables($ObsSentinelObj.Value.Trim())
 $script:UnifiedResolutionNotes += "$($ObsSentinelObj.Label)=$($ObsSentinelObj.Source)"
 
 $DebugModeObj = Resolve-UnifiedFirstBool -UnifiedData $UnifiedData -UnifiedPath 'launcher.debugMode' -EnvName 'REPLAYTROVE_LAUNCHER_DEBUG' -Default $false -Label 'DebugMode'
@@ -88,9 +87,6 @@ function Test-AppEnabled {
 $EnableWorkerObj = Resolve-UnifiedFirstBool -UnifiedData $UnifiedData -UnifiedPath 'launcher.enableWorker' -EnvName 'REPLAYTROVE_ENABLE_WORKER' -Default $true -Label 'EnableWorker'
 $EnableWorker = $EnableWorkerObj.Value
 $script:UnifiedResolutionNotes += "$($EnableWorkerObj.Label)=$($EnableWorkerObj.Source)"
-$EnableLogs2DropboxObj = Resolve-UnifiedFirstBool -UnifiedData $UnifiedData -UnifiedPath 'launcher.enableLogs2Dropbox' -EnvName 'REPLAYTROVE_ENABLE_LOGS2DROPBOX' -Default $true -Label 'EnableLogs2Dropbox'
-$EnableLogs2Dropbox = $EnableLogs2DropboxObj.Value
-$script:UnifiedResolutionNotes += "$($EnableLogs2DropboxObj.Label)=$($EnableLogs2DropboxObj.Source)"
 $EnableEncoderObj = Resolve-UnifiedFirstBool -UnifiedData $UnifiedData -UnifiedPath 'launcher.enableEncoder' -EnvName 'REPLAYTROVE_ENABLE_ENCODER' -Default $true -Label 'EnableEncoder'
 $EnableEncoder = $EnableEncoderObj.Value
 $script:UnifiedResolutionNotes += "$($EnableEncoderObj.Label)=$($EnableEncoderObj.Source)"
@@ -200,16 +196,17 @@ $script:UnifiedResolutionNotes += "$($ObsWebsocketPortObj.Label)=$($ObsWebsocket
 $WorkerStatusStaleSec = [Math]::Max(15, $WorkerStatusWriteIntervalSec * 3)
 $SupervisionStatusPath = Join-Path $PSScriptRoot 'supervision_status.json'
 $SupervisionOwnerLeasePath = Join-Path $PSScriptRoot 'supervision_owner_lease.json'
+$SupervisionDesiredStatePath = Join-Path $PSScriptRoot 'supervision_desired_state.json'
 $LauncherIntentsRoot = Join-Path $PSScriptRoot 'intents'
 $LauncherIntentsPendingDir = Join-Path $LauncherIntentsRoot 'pending'
 $LauncherIntentsProcessedDir = Join-Path $LauncherIntentsRoot 'processed'
 $LauncherIntentsFailedDir = Join-Path $LauncherIntentsRoot 'failed'
 $ScoreboardWindowTitle = 'ReplayTrove Scoreboard'
 
-$LogDir = Join-Path $PSScriptRoot 'logs'
-New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-$LogStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$script:LaunchLog = Join-Path $LogDir "launcher-$LogStamp.log"
+$CentralLogsRoot = Join-Path $UnifiedRoot 'logs'
+$env:REPLAYTROVE_LOGS_ROOT = $CentralLogsRoot
+New-Item -ItemType Directory -Force -Path $CentralLogsRoot | Out-Null
+. (Join-Path $UnifiedRoot 'scripts\replaytrove_json_log.ps1')
 $script:OwnerLeaseId = [guid]::NewGuid().ToString('N')
 $script:OwnerLeaseCreatedAtUtc = [DateTime]::UtcNow
 $script:OwnerLeaseClaimed = $false
@@ -218,8 +215,15 @@ $OwnerLeaseStaleSec = [Math]::Max(20, $SupervisionPollSec * 3)
 function Write-LauncherLog {
   param([string]$Message)
   $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'), $Message
-  Add-Content -LiteralPath $script:LaunchLog -Encoding utf8 -Value $line
   Write-Host $line
+  try {
+    Write-ReplayTroveJsonl -Component 'launcher' -Event 'log' -Level 'INFO' -Message $Message -Data @{
+      unified_root = $UnifiedRoot
+    }
+  }
+  catch {
+    Write-Host "[WARN] central JSONL log failed: $($_.Exception.Message)"
+  }
 }
 
 function Test-ProcessIdAlive {
@@ -348,7 +352,7 @@ if ($script:UnifiedResolutionNotes.Count -gt 0) {
     Write-LauncherLog ("Config fallback in use: " + ($fallback -join ', '))
   }
 }
-Write-LauncherLog "Ownership mode: launcher is primary runtime owner for worker/scoreboard/encoder_watchdog/obs (and logs2dropbox when enabled)."
+Write-LauncherLog "Ownership mode: launcher is primary runtime owner for worker/scoreboard/encoder_watchdog/obs."
 Write-LauncherLog "Cleaner owner mode: $CleanerOwnerMode (enableCleaner=$EnableCleaner)"
 
 function Wait-LauncherAck {
@@ -367,16 +371,53 @@ function Get-PythonInterpreter {
   Join-Path $AppDir ".venv\Scripts\$name"
 }
 
+function Normalize-AppDirectoryPath {
+  param([string]$FolderPath)
+  if ([string]::IsNullOrWhiteSpace($FolderPath)) { return $null }
+  try {
+    $full = [System.IO.Path]::GetFullPath($FolderPath)
+  } catch {
+    $full = $FolderPath
+  }
+  return (($full -replace '/', '\').TrimEnd('\'))
+}
+
+function Test-PythonProcessMatchesAppDir {
+  param(
+    $Proc,
+    [string]$AppDirNormalized,
+    [string]$ScriptName
+  )
+  if (-not $AppDirNormalized) { return $false }
+  $dirLower = $AppDirNormalized.ToLowerInvariant()
+  $prefix = "$dirLower\"
+  $scriptLower = $ScriptName.ToLowerInvariant()
+  $leafLower = [System.IO.Path]::GetFileName($AppDirNormalized).ToLowerInvariant()
+  $leafNeedle = if ($leafLower) { '\' + $leafLower + '\' } else { $null }
+  $cmd = $Proc.CommandLine
+  if ($cmd) {
+    $cn = ($cmd -replace '/', '\').ToLowerInvariant()
+    if ($cn.Contains($prefix) -and $cn.Contains($scriptLower)) { return $true }
+    if ($leafNeedle -and $cn.Contains($leafNeedle) -and $cn.Contains($scriptLower)) { return $true }
+  }
+  $exe = $Proc.ExecutablePath
+  if ($exe) {
+    $en = ($exe -replace '/', '\').ToLowerInvariant()
+    if ($en.StartsWith($prefix)) { return $true }
+    if ($leafNeedle -and $en.Contains($leafNeedle)) { return $true }
+  }
+  return $false
+}
+
 function Get-MatchingPythonProcesses {
   param(
     [string]$FolderPath,
     [string]$ScriptName
   )
-  $leaf = Split-Path -Path $FolderPath -Leaf
+  if ([string]::IsNullOrWhiteSpace($FolderPath) -or -not (Test-Path -LiteralPath $FolderPath)) { return @() }
+  $dirNorm = Normalize-AppDirectoryPath $FolderPath
   $procs = Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.exe'" -ErrorAction SilentlyContinue |
-    Where-Object {
-      $_.CommandLine -and $_.CommandLine -like "*\$leaf\*" -and $_.CommandLine -like "*$ScriptName*"
-    }
+    Where-Object { Test-PythonProcessMatchesAppDir -Proc $_ -AppDirNormalized $dirNorm -ScriptName $ScriptName }
   return @($procs)
 }
 
@@ -396,12 +437,11 @@ function Test-PythonAppRunning {
     [string]$FolderPath,
     [string]$ScriptName = 'main.py'
   )
-  $leaf = Split-Path -Path $FolderPath -Leaf
+  if ([string]::IsNullOrWhiteSpace($FolderPath) -or -not (Test-Path -LiteralPath $FolderPath)) { return $false }
+  $dirNorm = Normalize-AppDirectoryPath $FolderPath
   $procs = Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.exe'" -ErrorAction SilentlyContinue
   foreach ($p in $procs) {
-    $cmd = $p.CommandLine
-    if (-not $cmd) { continue }
-    if ($cmd -like "*\$leaf\*" -and $cmd -like "*$ScriptName*") { return $true }
+    if (Test-PythonProcessMatchesAppDir -Proc $p -AppDirNormalized $dirNorm -ScriptName $ScriptName) { return $true }
   }
   return $false
 }
@@ -424,6 +464,7 @@ function Wait-Readiness {
   )
   $deadline = (Get-Date).AddSeconds($TimeoutSec)
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  $lastProgressLog = [datetime]::MinValue
   while ((Get-Date) -lt $deadline) {
     try {
       if (& $Test) {
@@ -432,6 +473,11 @@ function Wait-Readiness {
       }
     } catch {
       Write-LauncherLog "Readiness check error ($Label): $($_.Exception.Message)"
+    }
+    $now = Get-Date
+    if (($now - $lastProgressLog).TotalSeconds -ge 30) {
+      Write-LauncherLog ("Readiness still waiting: {0} (elapsed {1:0.#}s / {2}s)..." -f $Label, $sw.Elapsed.TotalSeconds, $TimeoutSec)
+      $lastProgressLog = $now
     }
     Start-Sleep -Seconds $IntervalSec
   }
@@ -872,7 +918,7 @@ function Stop-Obs64ForLauncher {
 }
 
 function Start-EncoderWatchdogForLauncher {
-  Start-Process -WorkingDirectory $EncoderDir -FilePath $pyEncoder -ArgumentList @('encoder_watchdog.py') -WindowStyle $pyWindowStyle | Out-Null
+  Start-Process -WorkingDirectory $EncoderDir -FilePath $pyEncoder -ArgumentList @('encoder_watchdog.py') -WindowStyle $pyHeadlessWindowStyle | Out-Null
 }
 
 function Start-ObsForLauncher {
@@ -883,7 +929,7 @@ function Start-ObsForLauncher {
       Write-LauncherLog "WARN: could not remove OBS sentinel before restart: $($_.Exception.Message)"
     }
   }
-  Start-Process -WorkingDirectory $ObsDir -FilePath $ObsExe -ArgumentList $obsArgs -WindowStyle Minimized | Out-Null
+  Start-Process -WorkingDirectory $ObsDir -FilePath $ObsExe -ArgumentList $obsArgs -WindowStyle $obsWindowStyle | Out-Null
 }
 
 function Initialize-ScoreboardStatusWatchState {
@@ -990,20 +1036,11 @@ function Invoke-ControlAppMinimizeIfNeeded {
 }
 
 function Start-WorkerForLauncher {
-  Start-Process -WorkingDirectory $WorkerDir -FilePath $pyWorker -ArgumentList @('main.py') -WindowStyle $pyWindowStyle | Out-Null
+  Start-Process -WorkingDirectory $WorkerDir -FilePath $pyWorker -ArgumentList @('main.py') -WindowStyle $pyHeadlessWindowStyle | Out-Null
 }
 
 function Stop-WorkerForLauncher {
   $procs = Get-MatchingPythonProcesses -FolderPath $WorkerDir -ScriptName 'main.py'
-  Stop-ProcessList -Processes $procs
-}
-
-function Start-Logs2DropboxForLauncher {
-  Start-Process -WorkingDirectory $Logs2DropboxDir -FilePath $pyLogs -ArgumentList @('main.py') -WindowStyle $pyWindowStyle | Out-Null
-}
-
-function Stop-Logs2DropboxForLauncher {
-  $procs = Get-MatchingPythonProcesses -FolderPath $Logs2DropboxDir -ScriptName 'main.py'
   Stop-ProcessList -Processes $procs
 }
 
@@ -1015,7 +1052,7 @@ function Start-ScoreboardForLauncher {
       $null -ne (Get-Process -Name 'obs64' -ErrorAction SilentlyContinue)
     })
   }
-  Start-Process -WorkingDirectory $ScoreboardDir -FilePath $pyScore -ArgumentList @('main.py') -WindowStyle $pyWindowStyle | Out-Null
+  Start-Process -WorkingDirectory $ScoreboardDir -FilePath $pyScore -ArgumentList @('main.py') -WindowStyle $pyGuiWindowStyle | Out-Null
 }
 
 function Stop-ScoreboardForLauncher {
@@ -1036,7 +1073,6 @@ function Test-LauncherManagedTargetRunning {
     'scoreboard' { return (Test-PythonAppRunning -FolderPath $ScoreboardDir -ScriptName 'main.py') }
     'obs' { return ($null -ne (Get-Process -Name 'obs64' -ErrorAction SilentlyContinue)) }
     'encoder_watchdog' { return (Test-PythonAppRunning -FolderPath $EncoderDir -ScriptName 'encoder_watchdog.py') }
-    'logs2dropbox' { return (Test-PythonAppRunning -FolderPath $Logs2DropboxDir -ScriptName 'main.py') }
     default { return $false }
   }
 }
@@ -1057,7 +1093,6 @@ function Invoke-LauncherManagedTargetAction {
     'scoreboard' { $EnableScoreboard; break }
     'obs' { $EnableObs; break }
     'encoder_watchdog' { $EnableEncoder; break }
-    'logs2dropbox' { $EnableLogs2Dropbox; break }
     default { $null }
   }
   if ($null -eq $enabledCheck) {
@@ -1109,12 +1144,6 @@ function Invoke-LauncherManagedTargetAction {
       if ($actionNorm -eq 'restart') { Start-Sleep -Milliseconds 250 }
       if ($actionNorm -in @('start', 'restart')) { [void](Invoke-ManagedStartIfDesiredRunning -ComponentName 'encoder_watchdog' -Source ("intent_{0}" -f $actionNorm) -StartAction { Start-EncoderWatchdogForLauncher }) }
       return [pscustomobject]@{ Ok = $true; Message = "encoder_watchdog $actionNorm requested" }
-    }
-    'logs2dropbox' {
-      if ($actionNorm -in @('stop', 'restart')) { Stop-Logs2DropboxForLauncher }
-      if ($actionNorm -eq 'restart') { Start-Sleep -Milliseconds 200 }
-      if ($actionNorm -in @('start', 'restart')) { [void](Invoke-ManagedStartIfDesiredRunning -ComponentName 'logs2dropbox' -Source ("intent_{0}" -f $actionNorm) -StartAction { Start-Logs2DropboxForLauncher }) }
-      return [pscustomobject]@{ Ok = $true; Message = "logs2dropbox $actionNorm requested" }
     }
   }
 }
@@ -1340,20 +1369,6 @@ function Get-SupervisionComponents {
       AllowRestart = { return $true }
     }
   }
-  if ($EnableLogs2Dropbox) {
-    $items += [pscustomobject]@{
-      Name = 'logs2dropbox'
-      Probe = {
-        if (Test-PythonAppRunning -FolderPath $Logs2DropboxDir -ScriptName 'main.py') {
-          New-HealthResult -Classification 'running_and_healthy' -Reason 'process_present'
-        } else {
-          New-HealthResult -Classification 'not_running' -Reason 'process_missing'
-        }
-      }
-      Start = { [void](Invoke-ManagedStartIfDesiredRunning -ComponentName 'logs2dropbox' -Source 'supervision_health_restart' -StartAction { Start-Logs2DropboxForLauncher }) }
-      AllowRestart = { return $true }
-    }
-  }
   if ($EnableEncoder) {
     $items += [pscustomobject]@{
       Name = 'encoder_watchdog'
@@ -1387,11 +1402,15 @@ function Get-SupervisionComponents {
   return $items
 }
 
+function Get-ManagedDesiredStateComponentNames {
+  return @('worker', 'scoreboard', 'obs', 'encoder_watchdog')
+}
+
 function New-DesiredStateMap {
   param([array]$Components)
   $map = @{}
-  foreach ($comp in $Components) {
-    $map[[string]$comp.Name] = 'running'
+  foreach ($name in Get-ManagedDesiredStateComponentNames) {
+    $map[$name] = 'running'
   }
   return $map
 }
@@ -1421,7 +1440,81 @@ function Set-DesiredState {
   $DesiredStateMap[$ComponentName] = $DesiredState
   if ($old -ne $DesiredState) {
     Write-LauncherLog "SUPERVISION DESIRED_STATE: component=$ComponentName old=$old new=$DesiredState source=$Source"
+    if ($null -ne $script:DesiredStateMap -and [object]::ReferenceEquals($DesiredStateMap, $script:DesiredStateMap)) {
+      Write-SupervisionDesiredStateSnapshot -Reason $Source
+    }
   }
+}
+
+function Write-SupervisionDesiredStateSnapshot {
+  param([string]$Reason = 'update')
+  if ($null -eq $script:DesiredStateMap) { return }
+  $comps = [ordered]@{}
+  foreach ($name in Get-ManagedDesiredStateComponentNames) {
+    $comps[$name] = Get-DesiredState -DesiredStateMap $script:DesiredStateMap -ComponentName $name
+  }
+  $payload = [ordered]@{
+    schema_version = 1
+    updated_at = [DateTime]::UtcNow.ToString('o')
+    update_reason = $Reason
+    components = $comps
+  }
+  try {
+    $parent = Split-Path -Path $SupervisionDesiredStatePath -Parent
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
+      New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
+    $tmpPath = "$SupervisionDesiredStatePath.tmp"
+    $json = $payload | ConvertTo-Json -Depth 6
+    Set-Content -LiteralPath $tmpPath -Encoding UTF8 -Value $json
+    Move-Item -LiteralPath $tmpPath -Destination $SupervisionDesiredStatePath -Force
+    Write-LauncherLog "SUPERVISION DESIRED_STATE SNAPSHOT: wrote path=$SupervisionDesiredStatePath reason=$Reason"
+  } catch {
+    Write-LauncherLog "SUPERVISION DESIRED_STATE SNAPSHOT WARN: write failed path=$SupervisionDesiredStatePath error=$($_.Exception.Message)"
+  }
+}
+
+function Merge-SupervisionDesiredStateFromSnapshot {
+  param([hashtable]$DesiredStateMap)
+  if ($null -eq $DesiredStateMap) { return }
+  if (-not (Test-Path -LiteralPath $SupervisionDesiredStatePath)) {
+    Write-LauncherLog "SUPERVISION DESIRED_STATE SNAPSHOT: no file at $SupervisionDesiredStatePath; using defaults (all running)."
+    return
+  }
+  try {
+    $raw = Get-Content -LiteralPath $SupervisionDesiredStatePath -Raw -ErrorAction Stop
+    $j = $raw | ConvertFrom-Json -ErrorAction Stop
+  } catch {
+    Write-LauncherLog "SUPERVISION DESIRED_STATE SNAPSHOT WARN: corrupt or unreadable; ignoring. path=$SupervisionDesiredStatePath error=$($_.Exception.Message)"
+    return
+  }
+  $blob = $null
+  if ($null -ne $j.PSObject.Properties['components']) {
+    $blob = $j.components
+  } else {
+    $blob = $j
+  }
+  if ($null -eq $blob) {
+    Write-LauncherLog "SUPERVISION DESIRED_STATE SNAPSHOT WARN: empty payload; using defaults."
+    return
+  }
+  $propNames = @($blob.PSObject.Properties | ForEach-Object { $_.Name })
+  $applied = 0
+  foreach ($name in Get-ManagedDesiredStateComponentNames) {
+    if ($propNames -notcontains $name) { continue }
+    try {
+      $v = [string]$blob.$name
+    } catch {
+      continue
+    }
+    if ($v -notin @('running', 'stopped')) {
+      Write-LauncherLog "SUPERVISION DESIRED_STATE SNAPSHOT WARN: invalid value for component=$name value=$v; skipping."
+      continue
+    }
+    $DesiredStateMap[$name] = $v
+    $applied++
+  }
+  Write-LauncherLog "SUPERVISION DESIRED_STATE SNAPSHOT: loaded path=$SupervisionDesiredStatePath applied_entries=$applied"
 }
 
 function New-SupervisionStateMap {
@@ -1590,12 +1683,11 @@ function Invoke-SupervisionTick {
 }
 
 # --- Preflight ---
-Write-LauncherLog "ReplayTrove launcher starting (supervisor). Log: $script:LaunchLog"
+Write-LauncherLog "ReplayTrove launcher starting (supervisor). Central JSONL layout: $CentralLogsRoot\$(Get-Date -Format 'yyyy-MM-dd')\launcher.jsonl (+ timeline.jsonl, index.json)"
 Write-LauncherLog "Mode: $(if ($DebugMode) { 'DEBUG (python.exe)' } else { 'PRODUCTION (pythonw.exe)' })"
 
 $pyWorker = Get-PythonInterpreter $WorkerDir
 $pyScore  = Get-PythonInterpreter $ScoreboardDir
-$pyLogs = Get-PythonInterpreter $Logs2DropboxDir
 $pyEncoder = Get-PythonInterpreter $EncoderDir
 
 $preflight = @()
@@ -1606,10 +1698,6 @@ if ($EnableWorker) {
 if ($EnableScoreboard) {
   $preflight += @{ Path = (Join-Path $ScoreboardDir 'main.py'); Label = 'Scoreboard main.py' }
   $preflight += @{ Path = $pyScore; Label = 'Scoreboard venv Python' }
-}
-if ($EnableLogs2Dropbox) {
-  $preflight += @{ Path = (Join-Path $Logs2DropboxDir 'main.py'); Label = 'logs2dropbox main.py' }
-  $preflight += @{ Path = $pyLogs; Label = 'logs2dropbox venv Python' }
 }
 if ($EnableEncoder) {
   $preflight += @{ Path = (Join-Path $EncoderDir 'encoder_watchdog.py'); Label = 'Encoder encoder_watchdog.py' }
@@ -1646,27 +1734,26 @@ if ($EnableObs -and (Test-Path -LiteralPath $ObsSentinel)) {
   }
 }
 
-$pyWindowStyle = if ($DebugMode) { 'Normal' } else { 'Hidden' }
+# Headless Python (worker, encoder): Hidden in production is OK. Scoreboard is Tkinter — never use Hidden
+# (SW_HIDE can prevent the UI from coming up). OBS: Normal window avoids failed/minimized startup on some GPUs.
+$pyHeadlessWindowStyle = if ($DebugMode) { 'Normal' } else { 'Hidden' }
+$pyGuiWindowStyle = if ($DebugMode) { 'Normal' } else { 'Minimized' }
+$obsWindowStyle = 'Normal'
+# --disable-shutdown-check: honored on OBS 31.x; removed/ignored on OBS 32+ (rely on clearing .sentinel above).
+# --disable-missing-files-check: avoids another modal that blocks automation.
 # --verbose: richer OBS logs under %APPDATA%\obs-studio\logs (Help → Log Files in OBS).
-$obsArgs = @('--disable-shutdown-check', '--startreplaybuffer', '--verbose')
+$obsArgs = @('--disable-shutdown-check', '--disable-missing-files-check', '--startreplaybuffer', '--verbose')
 
 if ($EnableWorker) {
   Write-LauncherLog 'Launching worker...'
-  Start-Process -WorkingDirectory $WorkerDir -FilePath $pyWorker -ArgumentList @('main.py') -WindowStyle $pyWindowStyle | Out-Null
+  Start-Process -WorkingDirectory $WorkerDir -FilePath $pyWorker -ArgumentList @('main.py') -WindowStyle $pyHeadlessWindowStyle | Out-Null
 } else {
   Write-LauncherLog 'Skipping worker (disabled by REPLAYTROVE_ENABLE_WORKER=0)'
 }
 
-if ($EnableLogs2Dropbox) {
-  Write-LauncherLog 'Launching logs2dropbox...'
-  Start-Process -WorkingDirectory $Logs2DropboxDir -FilePath $pyLogs -ArgumentList @('main.py') -WindowStyle $pyWindowStyle | Out-Null
-} else {
-  Write-LauncherLog 'Skipping logs2dropbox (disabled by REPLAYTROVE_ENABLE_LOGS2DROPBOX=0)'
-}
-
 if ($EnableEncoder) {
   Write-LauncherLog 'Launching encoder watchdog...'
-  Start-Process -WorkingDirectory $EncoderDir -FilePath $pyEncoder -ArgumentList @('encoder_watchdog.py') -WindowStyle $pyWindowStyle | Out-Null
+  Start-Process -WorkingDirectory $EncoderDir -FilePath $pyEncoder -ArgumentList @('encoder_watchdog.py') -WindowStyle $pyHeadlessWindowStyle | Out-Null
 } else {
   Write-LauncherLog 'Skipping encoder (disabled by REPLAYTROVE_ENABLE_ENCODER=0)'
 }
@@ -1701,15 +1788,6 @@ if ($EnableWorker) {
   }
 }
 
-if ($EnableLogs2Dropbox) {
-  $logs2Ready = Wait-Readiness -Label 'logs2dropbox (python main.py)' -TimeoutSec $ReadinessPythonSec -IntervalSec $ReadinessIntervalSec -Test {
-    Test-PythonAppRunning -FolderPath $Logs2DropboxDir
-  }
-  if (-not $logs2Ready) {
-    Write-LauncherLog 'ERROR: logs2dropbox process not detected in time'
-  }
-}
-
 if ($EnableEncoder) {
   $encoderReady = Wait-Readiness -Label 'Encoder (python encoder_watchdog.py)' -TimeoutSec $ReadinessPythonSec -IntervalSec $ReadinessIntervalSec -Test {
     Test-PythonAppRunning -FolderPath $EncoderDir -ScriptName 'encoder_watchdog.py'
@@ -1721,7 +1799,7 @@ if ($EnableEncoder) {
 
 if ($EnableObs) {
   Write-LauncherLog 'Launching OBS...'
-  Start-Process -WorkingDirectory $ObsDir -FilePath $ObsExe -ArgumentList $obsArgs -WindowStyle Minimized | Out-Null
+  Start-Process -WorkingDirectory $ObsDir -FilePath $ObsExe -ArgumentList $obsArgs -WindowStyle $obsWindowStyle | Out-Null
 } else {
   Write-LauncherLog 'Skipping OBS (disabled by REPLAYTROVE_ENABLE_OBS=0)'
 }
@@ -1752,7 +1830,7 @@ if ($EnableObs) {
 
 if ($EnableScoreboard) {
   Write-LauncherLog 'Launching scoreboard...'
-  Start-Process -WorkingDirectory $ScoreboardDir -FilePath $pyScore -ArgumentList @('main.py') -WindowStyle $pyWindowStyle | Out-Null
+  Start-Process -WorkingDirectory $ScoreboardDir -FilePath $pyScore -ArgumentList @('main.py') -WindowStyle $pyGuiWindowStyle | Out-Null
 
   $sbReady = Wait-Readiness -Label 'Scoreboard (python main.py)' -TimeoutSec $ReadinessPythonSec -IntervalSec $ReadinessIntervalSec -Test {
     Test-PythonAppRunning -FolderPath $ScoreboardDir
@@ -1770,7 +1848,6 @@ Start-Sleep -Seconds $ReadinessIntervalSec
 Write-LauncherLog 'Post-launch validation...'
 $validation = [ordered]@{}
 if ($EnableWorker) { $validation['Worker'] = { Test-PythonAppRunning -FolderPath $WorkerDir } }
-if ($EnableLogs2Dropbox) { $validation['logs2dropbox'] = { Test-PythonAppRunning -FolderPath $Logs2DropboxDir } }
 if ($EnableEncoder) { $validation['Encoder'] = { Test-PythonAppRunning -FolderPath $EncoderDir -ScriptName 'encoder_watchdog.py' } }
 if ($EnableScoreboard) { $validation['Scoreboard'] = { Test-PythonAppRunning -FolderPath $ScoreboardDir } }
 if ($EnableObs) { $validation['OBS'] = { $null -ne (Get-Process -Name 'obs64' -ErrorAction SilentlyContinue) } }
@@ -1858,7 +1935,10 @@ $supervisionStateMap = New-SupervisionStateMap -Components $supervisionComponent
 $script:DesiredStateMap = New-DesiredStateMap -Components $supervisionComponents
 if ($null -eq $script:DesiredStateMap) { $script:DesiredStateMap = @{} }
 Write-LauncherLog ("SUPERVISION: phase-1 keepalive active components=" + (($supervisionComponents | ForEach-Object { $_.Name }) -join ','))
-Write-LauncherLog ("SUPERVISION DESIRED_STATE: initialized defaults=" + (($supervisionComponents | ForEach-Object { "{0}=running" -f $_.Name }) -join ', '))
+Write-LauncherLog "SUPERVISION DESIRED_STATE SNAPSHOT: path=$SupervisionDesiredStatePath"
+Merge-SupervisionDesiredStateFromSnapshot -DesiredStateMap $script:DesiredStateMap
+$rehydrated = (Get-ManagedDesiredStateComponentNames | ForEach-Object { "{0}={1}" -f $_, (Get-DesiredState -DesiredStateMap $script:DesiredStateMap -ComponentName $_) }) -join ', '
+Write-LauncherLog "SUPERVISION DESIRED_STATE: after rehydration $rehydrated"
 Ensure-LauncherIntentDirectories
 Write-LauncherLog "INTENT bridge active: pending=$LauncherIntentsPendingDir processed=$LauncherIntentsProcessedDir failed=$LauncherIntentsFailedDir"
 
