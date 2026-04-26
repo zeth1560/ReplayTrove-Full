@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   ReplayTrove launcher / supervisor: start apps, wait for readiness, validate processes, UI tweaks.
@@ -414,7 +414,18 @@ function Test-PythonProcessMatchesAppDir {
   }
   $exe = $Proc.ExecutablePath
   if ($exe) {
-    $en = ($exe -replace '/', '\').ToLowerInvariant()
+    try {
+      $en = [System.IO.Path]::GetFullPath(($exe -replace '/', '\')).ToLowerInvariant()
+    } catch {
+      $en = ($exe -replace '/', '\').ToLowerInvariant()
+    }
+    try {
+      $dirFull = [System.IO.Path]::GetFullPath(($AppDirNormalized -replace '/', '\')).ToLowerInvariant().TrimEnd('\')
+      $prefixFull = "$dirFull\"
+      if ($en.StartsWith($prefixFull)) { return $true }
+    } catch {
+      # fall through to legacy prefix match
+    }
     if ($en.StartsWith($prefix)) { return $true }
     if ($leafNeedle -and $en.Contains($leafNeedle)) { return $true }
   }
@@ -472,7 +483,8 @@ function Wait-Readiness {
     [string]$Label,
     [scriptblock]$Test,
     [int]$TimeoutSec,
-    [int]$IntervalSec
+    [int]$IntervalSec,
+    [int]$StabilitySec = 0
   )
   $deadline = (Get-Date).AddSeconds($TimeoutSec)
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -480,6 +492,13 @@ function Wait-Readiness {
   while ((Get-Date) -lt $deadline) {
     try {
       if (& $Test) {
+        if ($StabilitySec -gt 0) {
+          Start-Sleep -Seconds $StabilitySec
+          if (-not (& $Test)) {
+            Write-LauncherLog "Readiness: $Label passed once then disappeared within ${StabilitySec}s (startup crash or fast exit — check app logs, e.g. scoreboard log under logs/)."
+            continue
+          }
+        }
         Write-LauncherLog ('Readiness OK: {0} ({1:0.###}s)' -f $Label, $sw.Elapsed.TotalSeconds)
         return $true
       }
@@ -500,11 +519,12 @@ function Wait-Readiness {
 $script:LauncherWin32Loaded = $false
 function Initialize-LauncherWin32 {
   if ($script:LauncherWin32Loaded) { return }
-  Add-Type -Namespace ReplayTroveLauncher -Name User32 -Language CSharp -ErrorAction Stop -TypeDefinition @'
+  Add-Type -ErrorAction Stop -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
+namespace ReplayTroveLauncher {
 public static class User32 {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -526,6 +546,7 @@ public static class User32 {
     GetWindowText(hWnd, sb, sb.Capacity);
     return sb.ToString();
   }
+}
 }
 '@
   $script:LauncherWin32Loaded = $true
@@ -907,7 +928,48 @@ function Invoke-ObsRestartForReplaySignal {
   }
 }
 
+function Get-EncoderStatePathForLauncher {
+  $raw = [Environment]::GetEnvironmentVariable('ENCODER_STATE_PATH')
+  if (-not [string]::IsNullOrWhiteSpace($raw)) {
+    $t = $raw.Trim()
+    if ([System.IO.Path]::IsPathRooted($t)) {
+      return [System.IO.Path]::GetFullPath($t)
+    }
+    return [System.IO.Path]::GetFullPath((Join-Path $UnifiedRoot $t.TrimStart('\','/')))
+  }
+  $rel = Get-UnifiedNestedValue -Object $UnifiedData -Path 'scoreboard.encoderStatePath'
+  if ($rel -is [string] -and -not [string]::IsNullOrWhiteSpace($rel)) {
+    $t = $rel.Trim()
+    if ([System.IO.Path]::IsPathRooted($t)) {
+      return [System.IO.Path]::GetFullPath($t)
+    }
+    return [System.IO.Path]::GetFullPath((Join-Path $ScoreboardDir $t))
+  }
+  return [System.IO.Path]::GetFullPath((Join-Path $ScoreboardDir 'encoder_state.json'))
+}
+
+function Test-EncoderLongRecordingActive {
+  $path = Get-EncoderStatePathForLauncher
+  if (-not (Test-Path -LiteralPath $path)) { return $false }
+  try {
+    $j = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+  } catch {
+    return $false
+  }
+  if ($null -eq $j) { return $false }
+  if ($j.long_recording_active -eq $true) { return $true }
+  $st = [string]$j.state
+  if (-not [string]::IsNullOrWhiteSpace($st) -and $st.Trim().ToLowerInvariant() -eq 'recording') {
+    return $true
+  }
+  return $false
+}
+
 function Stop-EncoderStackForLauncher {
+  if (Test-EncoderLongRecordingActive) {
+    Write-LauncherLog 'Stop-EncoderStack skipped: encoder long recording active (policy: only operator stop or max duration ends a take).'
+    return
+  }
   $leaf = Split-Path -Path $EncoderDir -Leaf
   $names = @('encoder_watchdog.py', 'operator_long_only.py', 'operator_tk.py')
   $procs = Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.exe'" -ErrorAction SilentlyContinue
@@ -1856,7 +1918,7 @@ if ($EnableScoreboard) {
   Write-LauncherLog 'Launching scoreboard...'
   Start-Process -WorkingDirectory $ScoreboardDir -FilePath $pyScore -ArgumentList @('main.py') -WindowStyle $pyGuiWindowStyle | Out-Null
 
-  $sbReady = Wait-Readiness -Label 'Scoreboard (python main.py)' -TimeoutSec $ReadinessPythonSec -IntervalSec $ReadinessIntervalSec -Test {
+  $sbReady = Wait-Readiness -Label 'Scoreboard (python main.py)' -TimeoutSec $ReadinessPythonSec -IntervalSec $ReadinessIntervalSec -StabilitySec 3 -Test {
     Test-PythonAppRunning -FolderPath $ScoreboardDir
   }
   if (-not $sbReady) {

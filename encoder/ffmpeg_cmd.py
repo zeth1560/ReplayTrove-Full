@@ -356,6 +356,8 @@ def _long_record_args_dshow(s: EncoderSettings, output_file: Path) -> list[str]:
     # Larger mux queue reduces forced flushes when one stream is bursty (helps interleave).
     if s.long_record_max_muxing_queue_size > 0:
         cmd += ["-max_muxing_queue_size", str(s.long_record_max_muxing_queue_size)]
+    # -t caps output duration (LONG_RECORD_MAX_SECONDS). Players may still show the cap or a
+    # stale duration if the process is killed before ffmpeg finalizes the mux (see abrupt stops).
     cmd += ["-t", str(s.long_record_max_seconds), str(output_file.resolve())]
     return cmd
 

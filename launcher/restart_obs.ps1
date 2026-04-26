@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Stop OBS (obs64) and relaunch with the same flags ReplayTrove launcher uses.
@@ -30,7 +30,7 @@ if (Test-Path -LiteralPath $ObsSentinel) {
   try {
     Remove-Item -LiteralPath $ObsSentinel -Recurse -Force -ErrorAction Stop
   } catch {
-    Write-Warning "Could not remove OBS sentinel: $ObsSentinel — $($_.Exception.Message)"
+    Write-Warning "Could not remove OBS sentinel ($ObsSentinel): $($_.Exception.Message)"
   }
 }
 

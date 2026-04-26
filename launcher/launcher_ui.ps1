@@ -117,6 +117,38 @@ $ControlAppProcessName = if ($env:REPLAYTROVE_CONTROL_APP_NAME) {
 }
 $ControlAppArgs = if ($env:REPLAYTROVE_CONTROL_APP_ARGS) { $env:REPLAYTROVE_CONTROL_APP_ARGS } else { '' }
 $EncoderDir = if ($env:REPLAYTROVE_ENCODER_DIR) { $env:REPLAYTROVE_ENCODER_DIR } else { 'C:\ReplayTrove\encoder' }
+
+function Get-EncoderStatePathForLauncherUi {
+  $raw = [Environment]::GetEnvironmentVariable('ENCODER_STATE_PATH')
+  if (-not [string]::IsNullOrWhiteSpace($raw)) {
+    $t = $raw.Trim()
+    if ([System.IO.Path]::IsPathRooted($t)) {
+      return [System.IO.Path]::GetFullPath($t)
+    }
+    $root = Split-Path -Path $EncoderDir -Parent
+    return [System.IO.Path]::GetFullPath((Join-Path $root $t.TrimStart('\','/')))
+  }
+  $sb = if ($env:REPLAYTROVE_SCOREBOARD_DIR) { $env:REPLAYTROVE_SCOREBOARD_DIR } else { Join-Path (Split-Path $EncoderDir -Parent) 'scoreboard' }
+  return [System.IO.Path]::GetFullPath((Join-Path $sb 'encoder_state.json'))
+}
+
+function Test-EncoderLongRecordingActiveForUi {
+  $path = Get-EncoderStatePathForLauncherUi
+  if (-not (Test-Path -LiteralPath $path)) { return $false }
+  try {
+    $j = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+  } catch {
+    return $false
+  }
+  if ($null -eq $j) { return $false }
+  if ($j.long_recording_active -eq $true) { return $true }
+  $st = [string]$j.state
+  if (-not [string]::IsNullOrWhiteSpace($st) -and $st.Trim().ToLowerInvariant() -eq 'recording') {
+    return $true
+  }
+  return $false
+}
+
 $LauncherUiBat = Join-Path $PSScriptRoot 'launcher_ui.bat'
 $LauncherUiPs1 = Join-Path $PSScriptRoot 'launcher_ui.ps1'
 $SupervisionOwnerLeasePath = Join-Path $PSScriptRoot 'supervision_owner_lease.json'
@@ -343,7 +375,19 @@ $apps = @(
     Env = 'REPLAYTROVE_ENABLE_ENCODER'
     IsRunning = { Test-EncoderStackRunning -FolderPath $EncoderDir }
     Start = { Start-PythonScript -FolderPath $EncoderDir -ScriptName 'encoder_watchdog.py' }
-    Stop = { Stop-ProcessList -Processes (Get-EncoderStackPythonProcesses -FolderPath $EncoderDir) }
+    Stop = {
+      if (Test-EncoderLongRecordingActiveForUi) {
+        [void][System.Windows.Forms.MessageBox]::Show(
+          "Long recording is active. Use the encoder operator Stop recording button (or wait for the max duration) before stopping the encoder stack.",
+          'ReplayTrove Launcher',
+          [System.Windows.Forms.MessageBoxButtons]::OK,
+          [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+        Write-UiLog 'Encoder stop skipped: long recording active (policy).'
+        return
+      }
+      Stop-ProcessList -Processes (Get-EncoderStackPythonProcesses -FolderPath $EncoderDir)
+    }
   }
   @{
     Name = 'Cleaner Bee'

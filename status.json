@@ -2,8 +2,8 @@
   "worker_running": true,
   "network_state": "ONLINE",
   "pending_remote_sync_queue": 0,
-  "failed_jobs": 6,
+  "failed_jobs": 0,
   "stale_jobs": 0,
-  "last_successful_upload": "2026-04-22T20:41:10.586328+00:00",
-  "last_connectivity_change": "2026-04-22T20:09:38.999164+00:00"
+  "last_successful_upload": null,
+  "last_connectivity_change": "2026-04-26T16:14:50.996636+00:00"
 }

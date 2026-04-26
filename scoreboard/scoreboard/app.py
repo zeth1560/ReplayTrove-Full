@@ -97,6 +97,30 @@ SAFE_RELOAD_STATUS_PATH = r"C:\ReplayTrove\scoreboard\reload_safe_settings_statu
 _SAFE_RELOAD_MIN_MS = 100
 _SAFE_RELOAD_MAX_MS = 60_000
 
+# Prepended to bindtags so Escape runs before Tk's default fullscreen handler (Windows),
+# which otherwise consumes the key and prevents quit bindings on the "all" tag.
+_SCOREBOARD_ESCAPE_BIND_TAG = "ReplayTrove_ScoreboardEscape"
+
+# Windows: Tk ``-fullscreen`` uses an exclusive-style mode that blocks auto-hide taskbar peek
+# and can wedge ``destroy()``; borderless geometry avoids both.
+def _apply_scoreboard_main_window_presentation(root: tk.Tk) -> bool:
+    """Return True if Windows borderless geometry is active (not Tk ``-fullscreen``)."""
+    sw = max(1, int(root.winfo_screenwidth()))
+    sh = max(1, int(root.winfo_screenheight()))
+    if os.name == "nt":
+        try:
+            root.overrideredirect(True)
+            root.geometry(f"{sw}x{sh}+0+0")
+            _LOG.info("Main window: borderless presentation %sx%s (taskbar-friendly)", sw, sh)
+            return True
+        except tk.TclError:
+            _LOG.debug("borderless main window failed; falling back to -fullscreen", exc_info=True)
+    try:
+        root.attributes("-fullscreen", True)
+    except tk.TclError:
+        _LOG.debug("fullscreen attribute failed", exc_info=True)
+    return False
+
 
 @dataclass(frozen=True)
 class RuntimeSafeSettings:
@@ -155,8 +179,8 @@ class ScoreboardApp:
         state_path = Path(self.settings.state_file)
 
         self.root.title("Scoreboard")
-        self.root.attributes("-fullscreen", True)
         self.root.configure(bg="black")
+        self._windows_borderless_main = _apply_scoreboard_main_window_presentation(self.root)
 
         self._score_state = load_scores(state_path, rewrite_defaults_if_corrupt=True)
 
@@ -261,6 +285,7 @@ class ScoreboardApp:
             self.screen_height,
             on_dismiss_chord=self._on_recording_dismiss_chord,
             on_ui_visibility=self._on_recording_ui_visibility,
+            on_escape_close_app=self._schedule_close_app,
         )
 
         self._replay_buffer_loading = ReplayBufferLoadingOverlay(
@@ -308,6 +333,7 @@ class ScoreboardApp:
             redraw_scores=self.draw_scores,
             on_successful_replay_session_end=self.start_replay_buffer_loading_overlay,
             after_overlay_raise=self._sync_canvas_aux_overlays,
+            launcher_screensaver_active=lambda: self.screensaver.is_active(),
         )
 
         self.draw_scores()
@@ -319,6 +345,7 @@ class ScoreboardApp:
 
         self._setup_obs_status_indicator()
         self._bind_keys()
+        self.root.after(150, self._claim_initial_canvas_focus)
         self.schedule_idle_check()
         self.schedule_claim_focus()
         self.start_focus_watchdog()
@@ -1185,6 +1212,8 @@ class ScoreboardApp:
 
     def _on_recording_ui_visibility(self, visible: bool) -> None:
         self._encoder_status_overlay.set_recording_overlay_covers(visible)
+        if self._closing:
+            return
         event = "recording_overlay_visible" if visible else "recording_overlay_hidden"
         snap = self._diagnostic_ui_snapshot()
         _LOG.info("UI_transition %s snapshot=%s", event, snap)
@@ -1370,12 +1399,13 @@ class ScoreboardApp:
         if capturing and not was_enc:
             ro = self.recording_overlay
             if ro.state != RecordingOverlayState.COUNTING:
-                if ro.can_start_countdown_from_hotkey():
-                    _LOG.info(
-                        "Recording overlay: countdown started (encoder capture active; %s)",
-                        path,
-                    )
-                    ro.start_or_restart_countdown()
+                # Bypass can_start_countdown_from_hotkey(): that blocks ENDED_MESSAGE /
+                # SESSION_END_INFO, but a new encoder session should show the in-progress timer.
+                _LOG.info(
+                    "Recording overlay: countdown started (encoder capture active; %s)",
+                    path,
+                )
+                ro.start_or_restart_countdown()
             self._encoder_sync_believes_recording = True
         elif not capturing and was_enc:
             self._encoder_recording_idle_streak += 1
@@ -1553,12 +1583,29 @@ class ScoreboardApp:
         self._obs_status_inner = None
         self._obs_status_label = None
 
+    def _claim_initial_canvas_focus(self) -> None:
+        """Improve Escape reliability: fullscreen Tk often delivers keys only to the focused widget."""
+        try:
+            self.canvas.focus_set()
+        except tk.TclError:
+            _LOG.debug("initial canvas focus_set failed", exc_info=True)
+
     def _bind_keys(self) -> None:
         """Keyboard: local emergency exit only. Operator controls use the command file bus."""
-        self.root.bind_all(
-            "<Escape>",
-            lambda e: self.scheduler.schedule(0, self.close_app, name="escape_close_app"),
-        )
+
+        def on_escape(_event: tk.Event | None = None) -> str:
+            if self._closing:
+                return "break"
+            self._schedule_close_app()
+            return "break"
+
+        self.root.bind_class(_SCOREBOARD_ESCAPE_BIND_TAG, "<Escape>", on_escape)
+        for w in (self.root, self.canvas, self.video_host, self.black_screen_frame):
+            tags = list(w.bindtags())
+            if _SCOREBOARD_ESCAPE_BIND_TAG not in tags:
+                w.bindtags((_SCOREBOARD_ESCAPE_BIND_TAG, *tags))
+        # Focus can land on widgets without the prepended tag (encoder strip, replay host, etc.).
+        self.root.bind_all("<Escape>", on_escape)
 
     def _command_obs_restart(self) -> None:
         if self.screensaver.is_active():
@@ -1653,6 +1700,12 @@ class ScoreboardApp:
         action()
 
     def on_recording_start_hotkey(self) -> None:
+        if self.settings.recording_encoder_sync_enabled:
+            _LOG.info(
+                "recording_start ignored: in-progress overlay is driven by encoder_state.json "
+                "(RECORDING_ENCODER_SYNC_ENABLED=1)",
+            )
+            return
         if not self.recording_overlay.can_start_countdown_from_hotkey():
             return
         if self.settings.recording_obs_health_check:
@@ -1712,9 +1765,20 @@ class ScoreboardApp:
         self.on_recording_dismiss_hotkey()
 
     def on_recording_dismiss_hotkey(self) -> None:
-        if not self.recording_overlay.can_dismiss_from_operator_hotkey():
+        ro = self.recording_overlay
+        if (
+            self.settings.recording_encoder_sync_enabled
+            and self._encoder_sync_believes_recording
+            and ro.state == RecordingOverlayState.COUNTING
+        ):
+            _LOG.info(
+                "recording_dismiss ignored while encoder reports active capture "
+                "(overlay follows encoder_state.json)",
+            )
             return
-        self.recording_overlay.dismiss_from_operator_hotkey()
+        if not ro.can_dismiss_from_operator_hotkey():
+            return
+        ro.dismiss_from_operator_hotkey()
 
     def _show_black_screen_cover(self) -> None:
         if self.black_screen_cover_visible:
@@ -2001,11 +2065,39 @@ class ScoreboardApp:
         except (tk.TclError, ValueError, TypeError):
             _LOG.debug("Synthetic focus click failed", exc_info=True)
 
+    def _schedule_close_app(self) -> None:
+        """Run shutdown on the next event-loop tick.
+
+        Calling ``destroy()`` synchronously from an ``<Escape>`` handler on
+        Windows fullscreen Tk can leave the process wedged; deferring avoids that.
+        """
+        try:
+            self.root.after(0, self.close_app)
+        except tk.TclError:
+            pass
+
+    def _pre_destroy_window_manager_cleanup(self) -> None:
+        """Leave exclusive fullscreen / undecorated modes before teardown (Windows WM safety)."""
+        try:
+            self.root.attributes("-fullscreen", False)
+        except tk.TclError:
+            pass
+        if getattr(self, "_windows_borderless_main", False):
+            try:
+                self.root.overrideredirect(False)
+            except tk.TclError:
+                pass
+        try:
+            self.root.update_idletasks()
+        except tk.TclError:
+            pass
+
     def close_app(self) -> None:
         if self._closing:
             return
         self._closing = True
         _LOG.info("Application shutdown requested")
+        self._pre_destroy_window_manager_cleanup()
         self._obs_status_poll_busy = False
         self._recording_obs_check_in_flight = False
         self._teardown_obs_status_indicator()
@@ -2036,7 +2128,14 @@ class ScoreboardApp:
         self._operator_ui_heartbeat_job = None
         self.scheduler.cancel_all_tracked()
         self._publish_launcher_status()
-        self.root.destroy()
+        try:
+            self.root.quit()
+        except tk.TclError:
+            pass
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
 
     def schedule_idle_check(self) -> None:
         self.scheduler.cancel(self._idle_check_job)
@@ -2053,11 +2152,17 @@ class ScoreboardApp:
         now_ms = int(time.monotonic() * 1000)
         idle_ms = now_ms - self.last_input_ms
 
+        encoder_long_capture = (
+            self.settings.recording_encoder_sync_enabled
+            and self._encoder_sync_believes_recording
+        )
+
         if (
             self.settings.slideshow_enabled
             and not self.screensaver.is_active()
             and not self.replay.blocks_idle()
             and not self.recording_overlay.is_ui_active()
+            and not encoder_long_capture
             and not self.black_screen_active
             and idle_ms >= self.settings.idle_timeout_ms
         ):

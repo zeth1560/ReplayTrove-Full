@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import { defaultConfig } from "../../../packages/config/src/defaults.js";
@@ -724,7 +724,7 @@ const FIELD_META: FieldMeta[] = [
   {
     key: "encoder.uvcVideoDevice",
     label: "UVC / DirectShow video device",
-    help: "Exact device name from ffmpeg -list_devices, or pick from the list after Refresh. Leave empty to use encoder .env UVC_VIDEO_DEVICE.",
+    help: "Use the dropdown (after Refresh device list) or type the exact ffmpeg DirectShow name. Leave empty to use encoder .env UVC_VIDEO_DEVICE.",
     group: "Encoder (UVC)",
     restartRequired: true,
     hotReloadCandidate: false,
@@ -735,7 +735,7 @@ const FIELD_META: FieldMeta[] = [
   {
     key: "encoder.uvcAudioDevice",
     label: "UVC / DirectShow audio device",
-    help: "Exact audio device name from discovery, or type manually. Leave empty to use encoder .env UVC_AUDIO_DEVICE.",
+    help: "Use the dropdown (after Refresh) or type the exact name. Leave empty to use encoder .env UVC_AUDIO_DEVICE.",
     group: "Encoder (UVC)",
     restartRequired: true,
     hotReloadCandidate: false,
@@ -1082,6 +1082,7 @@ function App() {
     ffmpegPathUsed?: string;
     parseNote?: string;
   } | null>(null);
+  const encoderDevicesAutoRefreshRef = useRef(false);
   const [showScoreboardObsPassword, setShowScoreboardObsPassword] =
     useState<boolean>(false);
   const metaByKey = useMemo(
@@ -1187,25 +1188,29 @@ function App() {
     }
   }, []);
 
-  async function refreshEncoderDevices() {
-    setEncoderDiscovery({
+  const refreshEncoderDevices = useCallback(async () => {
+    setEncoderDiscovery((prev) => ({
       loading: true,
       error: null,
-      devicesOk: false,
-      videoDevices: [],
-      audioDevices: [],
-    });
+      devicesOk: prev?.devicesOk ?? false,
+      videoDevices: prev?.videoDevices ?? [],
+      audioDevices: prev?.audioDevices ?? [],
+      ffmpegPathUsed: prev?.ffmpegPathUsed,
+      parseNote: prev?.parseNote,
+    }));
     try {
-      const res = await fetch(`${API_BASE}/api/encoder/devices`);
+      const res = await fetch(`${API_BASE}/api/encoder/devices`, { cache: "no-store" });
       const data = await res.json();
       if (!res.ok || !data?.ok) {
-        setEncoderDiscovery({
+        setEncoderDiscovery((prev) => ({
           loading: false,
           error: String(data?.message ?? data?.error ?? `HTTP ${res.status}`),
           devicesOk: false,
-          videoDevices: [],
-          audioDevices: [],
-        });
+          videoDevices: prev?.videoDevices ?? [],
+          audioDevices: prev?.audioDevices ?? [],
+          ffmpegPathUsed: prev?.ffmpegPathUsed,
+          parseNote: prev?.parseNote,
+        }));
         return;
       }
       setEncoderDiscovery({
@@ -1218,15 +1223,24 @@ function App() {
         parseNote: data.parseNote ? String(data.parseNote) : undefined,
       });
     } catch (e) {
-      setEncoderDiscovery({
+      setEncoderDiscovery((prev) => ({
         loading: false,
         error: String(e),
         devicesOk: false,
-        videoDevices: [],
-        audioDevices: [],
-      });
+        videoDevices: prev?.videoDevices ?? [],
+        audioDevices: prev?.audioDevices ?? [],
+        ffmpegPathUsed: prev?.ffmpegPathUsed,
+        parseNote: prev?.parseNote,
+      }));
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    if (active !== "encoder") return;
+    if (encoderDevicesAutoRefreshRef.current) return;
+    encoderDevicesAutoRefreshRef.current = true;
+    void refreshEncoderDevices();
+  }, [active, refreshEncoderDevices]);
 
   async function loadSystemStatus() {
     try {
@@ -1614,6 +1628,10 @@ function App() {
   function renderEncoderForm() {
     const vids = encoderDiscovery?.videoDevices ?? [];
     const auds = encoderDiscovery?.audioDevices ?? [];
+    const currentVid = config.encoder.uvcVideoDevice;
+    const currentAud = config.encoder.uvcAudioDevice;
+    const showUnlistedVid = currentVid !== "" && !vids.some((d) => d.name === currentVid);
+    const showUnlistedAud = currentAud !== "" && !auds.some((d) => d.name === currentAud);
     return (
       <div>
         <p style={{ fontSize: 13, color: "#444", maxWidth: 720 }}>
@@ -1660,35 +1678,63 @@ function App() {
         </div>
         <div style={{ marginBottom: 16 }}>
           {fieldLabel(getMeta("encoder.uvcVideoDevice").label, getMeta("encoder.uvcVideoDevice").help)}
+          <div style={{ fontSize: 12, color: "#555", marginBottom: 6 }}>Discovered devices (from FFmpeg)</div>
+          <select
+            style={{ width: "100%", maxWidth: 640, marginBottom: 8, display: "block" }}
+            value={currentVid}
+            onChange={(e) => updateEncoder("uvcVideoDevice", e.target.value)}
+          >
+            <option value="">(Empty — use encoder .env / default)</option>
+            {showUnlistedVid ? (
+              <option value={currentVid}>
+                Current (not in last discovery): {currentVid.length > 72 ? `${currentVid.slice(0, 72)}…` : currentVid}
+              </option>
+            ) : null}
+            {vids.map((d, i) => (
+              <option key={`vid-${i}-${d.name}`} value={d.name}>
+                {d.name}
+              </option>
+            ))}
+          </select>
+          <div style={{ fontSize: 12, color: "#555", marginBottom: 6 }}>Exact video device string (saved to config)</div>
           <input
-            list="encoder-video-devices-datalist"
             style={{ width: "100%", maxWidth: 640 }}
             value={config.encoder.uvcVideoDevice}
             onChange={(e) => updateEncoder("uvcVideoDevice", e.target.value)}
-            placeholder="Pick from list or type (empty = .env / default)"
+            placeholder="Must match ffmpeg DirectShow name exactly"
             autoComplete="off"
+            spellCheck={false}
           />
-          <datalist id="encoder-video-devices-datalist">
-            {vids.map((d) => (
-              <option key={`v-${d.name}`} value={d.name} />
-            ))}
-          </datalist>
         </div>
         <div style={{ marginBottom: 16 }}>
           {fieldLabel(getMeta("encoder.uvcAudioDevice").label, getMeta("encoder.uvcAudioDevice").help)}
+          <div style={{ fontSize: 12, color: "#555", marginBottom: 6 }}>Discovered devices (from FFmpeg)</div>
+          <select
+            style={{ width: "100%", maxWidth: 640, marginBottom: 8, display: "block" }}
+            value={currentAud}
+            onChange={(e) => updateEncoder("uvcAudioDevice", e.target.value)}
+          >
+            <option value="">(Empty — use encoder .env / default)</option>
+            {showUnlistedAud ? (
+              <option value={currentAud}>
+                Current (not in last discovery): {currentAud.length > 72 ? `${currentAud.slice(0, 72)}…` : currentAud}
+              </option>
+            ) : null}
+            {auds.map((d, i) => (
+              <option key={`aud-${i}-${d.name}`} value={d.name}>
+                {d.name}
+              </option>
+            ))}
+          </select>
+          <div style={{ fontSize: 12, color: "#555", marginBottom: 6 }}>Exact audio device string (saved to config)</div>
           <input
-            list="encoder-audio-devices-datalist"
             style={{ width: "100%", maxWidth: 640 }}
             value={config.encoder.uvcAudioDevice}
             onChange={(e) => updateEncoder("uvcAudioDevice", e.target.value)}
-            placeholder="Pick from list or type (empty = .env / default)"
+            placeholder="Must match ffmpeg DirectShow name exactly"
             autoComplete="off"
+            spellCheck={false}
           />
-          <datalist id="encoder-audio-devices-datalist">
-            {auds.map((d) => (
-              <option key={`a-${d.name}`} value={d.name} />
-            ))}
-          </datalist>
         </div>
       </div>
     );

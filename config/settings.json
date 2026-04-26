@@ -122,8 +122,8 @@
     "mpvPath": "C:\\ReplayTrove\\mpv\\mpv.exe"
   },
   "encoder": {
-    "uvcVideoDevice": "CyberTrack H7",
-    "uvcAudioDevice": "Microphone (CyberTrack H7)"
+    "uvcVideoDevice": "UVCHDCAP, Video Capture",
+    "uvcAudioDevice": "Microphone (2- Samson Meteor Mic)"
   },
   "storage": {
     "s3PreviewPrefix": "previews",

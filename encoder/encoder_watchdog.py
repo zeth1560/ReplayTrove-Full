@@ -1,6 +1,8 @@
 """
 Supervise the long-record operator process and restart it when encoder_state.json
-reports unhealthy status (blocked, degraded, or stale updates).
+reports unhealthy status (blocked, degraded, or stale updates). While
+``long_recording_active`` is true or ``state`` is ``recording``, stale/degraded
+restarts are skipped so a take ends only via the operator or max duration.
 
 Run this instead of starting operator_long_only.py directly, e.g.:
   python encoder_watchdog.py
@@ -103,6 +105,16 @@ def _state_requires_restart(data: dict[str, Any]) -> tuple[bool, str]:
     if st == "unavailable":
         return False, ""
     return False, ""
+
+
+def _long_recording_active(data: dict[str, Any] | None) -> bool:
+    """True when operator reports an in-progress capture (do not kill for stale/degraded)."""
+    if not data:
+        return False
+    if data.get("long_recording_active") is True:
+        return True
+    st = str(data.get("state", "")).strip().lower()
+    return st == "recording"
 
 
 def _stale_seconds(path: Path, stale_after: float) -> tuple[bool, str]:
@@ -213,8 +225,17 @@ def main() -> None:
             in_grace = (time.monotonic() - spawn_mono) < grace
 
             if not in_grace:
+                data = _read_state(state_path)
                 bad_stale, stale_reason = _stale_seconds(state_path, stale_after)
                 if bad_stale:
+                    if _long_recording_active(data):
+                        log.warning(
+                            "Operator state stale (%s) but long recording active; "
+                            "skipping restart (policy: stop only via operator or max duration).",
+                            stale_reason,
+                        )
+                        time.sleep(poll)
+                        continue
                     log.warning("Restarting operator: %s", stale_reason)
                     _kill_process_tree(child.pid, log)
                     try:
@@ -226,10 +247,17 @@ def main() -> None:
                     time.sleep(1.0)
                     continue
 
-                data = _read_state(state_path)
                 if data:
                     need, reason = _state_requires_restart(data)
                     if need:
+                        if _long_recording_active(data):
+                            log.warning(
+                                "Operator restart wanted (%s) but long recording active; "
+                                "skipping kill (policy: stop only via operator or max duration).",
+                                reason,
+                            )
+                            time.sleep(poll)
+                            continue
                         log.warning(
                             "Restarting operator: %s (state=%s last_error=%s)",
                             reason,

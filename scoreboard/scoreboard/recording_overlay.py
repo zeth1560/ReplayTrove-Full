@@ -36,11 +36,13 @@ class RecordingOverlay:
         screen_height: int,
         on_dismiss_chord: Callable[[tk.Event], None],
         on_ui_visibility: Callable[[bool], None] | None = None,
+        on_escape_close_app: Callable[[], None] | None = None,
     ) -> None:
         self._root = root
         self._settings = settings
         self._on_dismiss_chord = on_dismiss_chord
         self._on_ui_visibility = on_ui_visibility
+        self._on_escape_close_app = on_escape_close_app
         self._scheduler = scheduler
         self._screen_width = screen_width
         self._screen_height = screen_height
@@ -78,6 +80,11 @@ class RecordingOverlay:
             self._on_ui_visibility(visible)
         except Exception:
             _LOG.exception("Recording overlay on_ui_visibility callback failed")
+
+    def _on_escape_close_app_event(self, _event: tk.Event) -> str:
+        if self._on_escape_close_app is not None:
+            self._on_escape_close_app()
+        return "break"
 
     @property
     def state(self) -> RecordingOverlayState:
@@ -258,6 +265,8 @@ class RecordingOverlay:
             _LOG.debug("Could not set recording overlay topmost", exc_info=True)
 
         win.geometry(self._geometry())
+        if self._on_escape_close_app is not None:
+            win.bind("<Escape>", self._on_escape_close_app_event)
 
         outer = tk.Frame(win, bg="black", highlightthickness=0)
         outer.pack(fill="both", expand=True)

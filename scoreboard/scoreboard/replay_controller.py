@@ -64,6 +64,7 @@ class ReplayController:
         redraw_scores: Callable[[], None],
         on_successful_replay_session_end: Callable[[], None] | None = None,
         after_overlay_raise: Callable[[], None] | None = None,
+        launcher_screensaver_active: Callable[[], bool] | None = None,
     ) -> None:
         self._root = root
         self._settings = settings
@@ -80,6 +81,7 @@ class ReplayController:
         self._redraw_scores = redraw_scores
         self._on_successful_replay_session_end = on_successful_replay_session_end
         self._after_overlay_raise = after_overlay_raise
+        self._launcher_screensaver_active = launcher_screensaver_active
 
         self._phase = ReplayPhase.IDLE
         self._showing_replay = False
@@ -157,7 +159,12 @@ class ReplayController:
             self._after_overlay_raise()
 
     def blocks_idle(self) -> bool:
-        return self._showing_replay or self._is_transitioning
+        # Include explicit video flag so idle/screensaver cannot arm during mpv if replay flags desync.
+        return (
+            self._showing_replay
+            or self._is_transitioning
+            or self._replay_video_active
+        )
 
     def blocks_black_screen_toggle(self) -> bool:
         return (
@@ -348,9 +355,18 @@ class ReplayController:
         path = (self._settings.launcher_status_json_path or "").strip()
         if not path:
             return
+        # Must match real screensaver state: hardcoding False desyncs the launcher watch loop
+        # (it keys off screensaver edges) and can stop/restart the encoder stack incorrectly.
+        screensaver_active = False
+        if self._launcher_screensaver_active is not None:
+            try:
+                screensaver_active = bool(self._launcher_screensaver_active())
+            except Exception:
+                _LOG.debug("launcher_screensaver_active snapshot failed", exc_info=True)
+
         payload = {
             "scoreboard_running": True,
-            "screensaver_active": False,
+            "screensaver_active": screensaver_active,
             "replay_obs_restart_requested": True,
             "replay_obs_restart_reason": reason,
             "updated_at": utc_now_iso(),
