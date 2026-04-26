@@ -36,6 +36,8 @@ scoreboard/logs/
 /logs/
 # Worker job database (not under logs/)
 /data/*.sqlite
+/data/*.sqlite-shm
+/data/*.sqlite-wal
 *.zip
 *.tmp
 *.temp
