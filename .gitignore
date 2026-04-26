@@ -51,6 +51,9 @@ scoreboard/logs/
 **/.env
 *.env
 **/*.env
+# Keep tracked example env files for new clones
+!.env.example
+!**/.env.example
 *.secret
 *.secrets
 *.local
@@ -63,10 +66,23 @@ scoreboard/logs/
 __pycache__/
 *.pyc
 
+# ---------- Node / frontend build artifacts (monorepo) ----------
+node_modules/
+apps/control-center/node_modules/
+apps/control-center/node_modules/.vite/
+apps/control-center/dist/
+
 # ---------- Bundled binaries (GitHub 100MB file limit) ----------
 /mpv/
 
-# Launcher supervision operator-local desired state (rehydrated on startup)
+# ---------- Command bus + runtime state (appliance-local) ----------
+/commands/
+/state/
+/status.json
+
+# Launcher supervision: live process coordination (not source)
+/launcher/supervision_status.json
+/launcher/supervision_owner_lease.json
 /launcher/supervision_desired_state.json
 
 # ---------- ReplayTrove runtime directories ----------

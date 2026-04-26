@@ -1,9 +1,0 @@
-﻿{
-    "owner_id":  "9f056c97d72a4bdb80313bd9f849a254",
-    "pid":  11980,
-    "hostname":  "DESKTOP-R9DOBBK",
-    "created_at":  "2026-04-25T06:09:58.6870346Z",
-    "updated_at":  "2026-04-25T06:17:16.5405143Z",
-    "lease_timeout_sec":  20,
-    "reason":  "heartbeat"
-}
