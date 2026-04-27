@@ -180,6 +180,8 @@ class EncoderSettings:
     long_record_ffprobe_verify: bool
     long_record_ffprobe_min_duration_seconds: float
     encoder_ui_mode: str
+    watchdog_http_bind: str
+    watchdog_http_port: int
 
 
 def _encoder_ui_mode() -> str:
@@ -333,4 +335,6 @@ def load_encoder_settings() -> EncoderSettings:
             "LONG_RECORD_FFPROBE_MIN_DURATION_SECONDS", 0.5, 0.5
         ),
         encoder_ui_mode=_encoder_ui_mode(),
+        watchdog_http_bind=_opt("ENCODER_WATCHDOG_HTTP_BIND", "127.0.0.1"),
+        watchdog_http_port=_opt_int("ENCODER_WATCHDOG_HTTP_PORT", 18766, 0),
     )

@@ -58,6 +58,7 @@ from flight_recorder import (
 from settings import EncoderSettings, load_encoder_settings
 from startup_validate import validate_startup_detailed
 from subprocess_win import no_console_creationflags
+from watchdog_ping_server import start_watchdog_ping_server_thread
 
 logger = logging.getLogger("replaytrove.encoder")
 
@@ -695,6 +696,8 @@ class LongOnlyApp:
         self._long_recording_started_at_iso: str | None = None
         self._ui_hidden = settings.encoder_ui_mode == "hidden"
         self._last_tick_wm_state: str | None = None
+        self._watchdog_ping_lock = threading.Lock()
+        self._watchdog_ping_payload: dict[str, Any] = {}
 
         setup_encoder_logging(
             settings.encoder_logs_root,
@@ -748,6 +751,55 @@ class LongOnlyApp:
         self._tick()
         self.root.after(100, self.command_poll_loop)
         self.events.emit("APP_READY", message="Long-only operator app ready.")
+        if self.settings.watchdog_http_port > 0:
+            start_watchdog_ping_server_thread(
+                self._snapshot_watchdog_ping_payload_for_http,
+                self.settings.watchdog_http_bind,
+                self.settings.watchdog_http_port,
+                logger,
+            )
+
+    def _refresh_watchdog_ping_payload(self) -> None:
+        """Tk thread: refresh JSON served to encoder_watchdog (GET /watchdog)."""
+        recording = self.rec.running()
+        restart_recommended = bool(
+            self._restart_pending
+            or self._startup_blocked
+            or (self._degraded and not recording)
+        )
+        if recording:
+            note = (
+                "Long capture in progress — process is healthy; "
+                "state file may be temporarily unreadable."
+            )
+        elif self._shutting_down:
+            note = "Shutting down."
+        elif self._startup_blocked:
+            note = "Startup blocked — watchdog restart recommended."
+        elif self._degraded:
+            note = "Degraded — watchdog restart recommended."
+        else:
+            note = "Ok."
+
+        payload: dict[str, Any] = {
+            "schema_version": 1,
+            "run_id": self.run_id,
+            "ok": not self._shutting_down,
+            "app_state": self._app_state,
+            "long_recording_active": recording,
+            "degraded": self._degraded,
+            "startup_blocked": self._startup_blocked,
+            "restart_pending": self._restart_pending,
+            "restart_recommended": restart_recommended,
+            "operator_note": note,
+        }
+        with self._watchdog_ping_lock:
+            self._watchdog_ping_payload = payload
+
+    def _snapshot_watchdog_ping_payload_for_http(self) -> dict[str, Any]:
+        """HTTP worker thread: copy last payload without touching Tk."""
+        with self._watchdog_ping_lock:
+            return dict(self._watchdog_ping_payload)
 
     def check_for_commands(self) -> None:
         try:
@@ -1225,6 +1277,7 @@ class LongOnlyApp:
             payload,
             on_written=self._on_state_file_written,
         )
+        self._refresh_watchdog_ping_payload()
 
     def _on_state_file_written(self, path: Path, payload: dict[str, Any]) -> None:
         now = time.monotonic()
