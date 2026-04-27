@@ -1078,11 +1078,14 @@ def build_preview_filename(original: Path) -> str:
     return f"{original.stem}.mp4"
 
 
-def parse_captured_at_utc(path: Path) -> str:
+def parse_captured_at_utc(path: Path, local_tz_name: str | None = None) -> str:
     """
-    Convert a UTC filename stem like 2026-04-04T19-12-13Z
-    into ISO UTC 2026-04-04T19:12:13Z.
-    Falls back to current UTC if parsing fails.
+    Convert a clip filename stem into ISO ``recorded_at`` (UTC).
+
+    - After UTC rename: ``YYYY-MM-DDTHH-MM-SSZ`` → ``YYYY-MM-DDTHH:MM:SSZ``.
+    - If that fails and ``local_tz_name`` is set, try local encoder/OBS layout
+      ``YYYY-MM-DDTHH-MM-SS`` interpreted in that zone (file not yet UTC-renamed).
+    - Last resort: current UTC (logged; indicates an unexpected basename).
     """
     stem = path.stem
     if stem.lower().endswith("z") and len(stem) >= 1:
@@ -1091,7 +1094,19 @@ def parse_captured_at_utc(path: Path) -> str:
         dt = datetime.strptime(stem, "%Y-%m-%dT%H-%M-%SZ").replace(tzinfo=timezone.utc)
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     except ValueError:
-        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        pass
+    if local_tz_name:
+        try:
+            local_dt = datetime.strptime(path.stem, "%Y-%m-%dT%H-%M-%S")
+            local_dt = local_dt.replace(tzinfo=ZoneInfo(local_tz_name))
+            return local_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            pass
+    logger.warning(
+        "Could not parse captured_at from filename; using current UTC",
+        extra={"structured": {"path": path.name}},
+    )
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _deterministic_slug(stem: str, idempotency_key: str) -> str:
@@ -1511,7 +1526,7 @@ def process_clip(
             captured_at_utc = (
                 job.recorded_at
                 if job.recorded_at
-                else parse_captured_at_utc(clip_path)
+                else parse_captured_at_utc(clip_path, settings.local_timezone)
             )
             duration_seconds = probe_duration_seconds(settings, clip_path)
 

@@ -56,6 +56,24 @@ def _local_timestamp_basename(settings: Settings, suffix: str) -> str:
     return datetime.now(zone).strftime("%Y-%m-%dT%H-%M-%S") + suffix.lower()
 
 
+def _long_clip_promotion_basename(entry: Path, settings: Settings) -> str:
+    """
+    Basename when promoting a finished long recording from ``long_clips`` into ``clips`` incoming.
+
+    Encoder long-record outputs use local wall time in the stem (``YYYY-MM-DDTHH-MM-SS``), e.g.
+    ``2026-04-26T11-25-32.mkv``. That time is the capture start, required for correct UTC rename
+    and booking match. Do not replace it with "now" at promotion time.
+    """
+    suffix = entry.suffix.lower() if entry.suffix else ".mp4"
+    if not suffix.startswith("."):
+        suffix = f".{suffix}"
+    try:
+        datetime.strptime(entry.stem, "%Y-%m-%dT%H-%M-%S")
+    except ValueError:
+        return _local_timestamp_basename(settings, suffix)
+    return entry.stem + suffix
+
+
 def incoming_clip_local_basename(settings: Settings, suffix: str = ".mp4") -> str:
     """
     Local OBS-style basename for a clip placed in incoming (``YYYY-MM-DDTHH-MM-SS.mp4``).
@@ -421,8 +439,7 @@ def _long_clips_scan_pass(
             )
             continue
 
-        suffix = entry.suffix.lower() if entry.suffix else ".mp4"
-        name = _local_timestamp_basename(settings, suffix)
+        name = _long_clip_promotion_basename(entry, settings)
         final_dest = unique_destination(settings.clips_incoming_folder, name)
         temp_dest = final_dest.with_name(final_dest.stem + ".copying" + final_dest.suffix)
 
