@@ -26,6 +26,10 @@ from lifecycle_events import (
 
 logger = logging.getLogger(__name__)
 
+# Require this many identical probe results in a row before committing a new
+# coarse state and emitting transition logs (reduces flapping on flaky links).
+_STATE_CONFIRMATION_STREAK = 2
+
 
 def _resolve_host(hostname: str, *, timeout_seconds: float) -> bool:
     if not hostname:
@@ -57,7 +61,7 @@ class ConnectivityMonitor:
     """
     Tracks coarse connectivity: ONLINE (Supabase + S3 TCP both OK),
     DEGRADED (exactly one OK), OFFLINE (neither OK).
-    Emits structured logs only when ``state`` changes.
+    Emits structured logs only when ``state`` changes (after debounced confirmation).
     """
 
     def __init__(
@@ -75,6 +79,8 @@ class ConnectivityMonitor:
         self._last_snapshot: dict[str, Any] = {}
         self._started_offline_logged = False
         self._last_state_change_at = time.time()
+        self._pending_target: str | None = None
+        self._pending_count = 0
 
     @property
     def state(self) -> str:
@@ -121,6 +127,33 @@ class ConnectivityMonitor:
 
         details["state"] = state
         return state, details
+
+    def _record_probe(self, state: str, details: dict[str, Any]) -> None:
+        """Refresh snapshot every probe; commit coarse state after a confirmation streak."""
+        apply: tuple[str, dict[str, Any]] | None = None
+        with self._lock:
+            self._last_snapshot = details
+            committed = self._state
+            if state == committed:
+                self._pending_target = None
+                self._pending_count = 0
+            elif self._pending_target != state:
+                self._pending_target = state
+                self._pending_count = 1
+            else:
+                self._pending_count += 1
+
+            if (
+                state != committed
+                and self._pending_count >= _STATE_CONFIRMATION_STREAK
+                and self._pending_target == state
+            ):
+                apply = (state, dict(details))
+                self._pending_target = None
+                self._pending_count = 0
+
+        if apply is not None:
+            self._apply_state(apply[0], apply[1])
 
     def _apply_state(self, state: str, details: dict[str, Any]) -> None:
         with self._lock:
@@ -198,12 +231,14 @@ class ConnectivityMonitor:
             self._state = "OFFLINE"
             self._last_snapshot = {"reason": "startup_supabase_warmup_failed"}
             self._last_state_change_at = time.time()
+            self._pending_target = None
+            self._pending_count = 0
 
     def run_loop(self, stop: threading.Event) -> None:
         while not stop.is_set():
             try:
                 state, details = self.probe_once()
-                self._apply_state(state, details)
+                self._record_probe(state, details)
             except Exception:
                 logger.exception("Connectivity probe failed")
             if stop.wait(timeout=self._interval):

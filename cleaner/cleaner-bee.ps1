@@ -1,3 +1,4 @@
+# Local folder cleanup only (does not delete S3). Long-term clip thumbnails stay in S3 under thumbnails/.
 param(
     [string[]]$TargetFolders = @("C:\ReplayTrove\previews", "C:\ReplayTrove\processed"),
     [int]$RetentionHours = 24,

@@ -1,0 +1,8 @@
+﻿{
+    "id":  "8627a950342247cda792c24b012bc664",
+    "action":  "stop",
+    "target":  "encoder_watchdog",
+    "created_at":  "2026-04-30T05:58:03.8151049Z",
+    "source":  "launcher_ui.ps1",
+    "source_action":  "stop_selected"
+}

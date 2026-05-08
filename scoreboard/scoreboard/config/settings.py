@@ -63,6 +63,9 @@ DEFAULT_ENCODER_READY_IMAGE = "assets/recorderstatus/ready.png"
 DEFAULT_ENCODER_UNAVAILABLE_IMAGE = "assets/recorderstatus/unavailable.png"
 DEFAULT_LAUNCHER_RESTART_OBS_SCRIPT = r"C:\ReplayTrove\launcher\restart_obs.ps1"
 DEFAULT_LAUNCHER_STATUS_JSON_PATH = r"C:\ReplayTrove\launcher\scoreboard_status.json"
+DEFAULT_BOOKING_OVERLAY_WELCOME_IMAGE = r"C:\ReplayTrove\graphics\startsession.png"
+DEFAULT_BOOKING_OVERLAY_GOODBYE_IMAGE = r"C:\ReplayTrove\graphics\ENDsession.png"
+DEFAULT_BOOKING_OVERLAY_STATE_FILE = r"state\booking_overlay_state.json"
 
 IDLE_TIMEOUT_MS = 30 * 60 * 1000
 SLIDESHOW_INTERVAL_MS = 12 * 1000
@@ -221,7 +224,7 @@ class Settings:
     recording_encoder_sync_enabled: bool
     recording_encoder_poll_ms: int
 
-    # Timing (fixed product defaults; not from .env unless we add later)
+    # Idle slideshow (see IDLE_TIMEOUT_MS, SLIDESHOW_* env vars)
     idle_timeout_ms: int = IDLE_TIMEOUT_MS
     slideshow_interval_ms: int = SLIDESHOW_INTERVAL_MS
     slideshow_fade_duration_ms: int = SLIDESHOW_FADE_DURATION_MS
@@ -286,11 +289,12 @@ class Settings:
     obs_restart_start_replay_buffer: bool = True
     obs_restart_post_launch_delay_ms: int = 4500
 
-    # Bottom-left OBS status strip (WebSocket probe; independent of RECORDING_OBS_HEALTH_CHECK).
+    # Bottom-left text strip: encoder_state.json (ReplayTrove ffmpeg encoder), same rules as ENCODER_STATUS_*.
+    # Env names OBS_STATUS_* are historical; strip is not OBS WebSocket.
     obs_status_indicator_enabled: bool = True
     obs_status_poll_interval_ms: int = 4000
-    # If True, status shows unavailable while main output recording is active.
-    # Default False so "OBS is up" reads as READY for operators.
+    # Used only by probe_obs_video_recorder_ready / recording gate — not by the bottom-left strip.
+    # If True, those probes treat main OBS record output active as "not ready".
     obs_status_require_main_output_idle: bool = False
 
     # mpv instant-replay subprocess (MPV_* env vars)
@@ -328,6 +332,19 @@ class Settings:
     # Instant-replay readiness: optional GET http://host:port/health (worker replay-trigger-http).
     worker_http_health_host: str = "127.0.0.1"
     worker_http_health_port: int | None = None
+    booking_overlay_enabled: bool = True
+    booking_overlay_duration_ms: int = 30_000
+    booking_overlay_poll_interval_sec: int = 1800
+    booking_overlay_suppress_during_replay: bool = True
+    booking_overlay_welcome_image: str = DEFAULT_BOOKING_OVERLAY_WELCOME_IMAGE
+    booking_overlay_goodbye_image: str = DEFAULT_BOOKING_OVERLAY_GOODBYE_IMAGE
+    booking_overlay_state_path: str = DEFAULT_BOOKING_OVERLAY_STATE_FILE
+    booking_overlay_dry_run: bool = False
+    pickle_planner_match_url: str = ""
+    pickle_planner_api_key: str = ""
+    pickle_planner_api_key_header: str = "x-api-key"
+    club_id: str = ""
+    court_id: str = ""
 
 
 def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
@@ -463,6 +480,45 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
         "COMPANION_READINESS_REQUIRE_OBS_WEBSOCKET",
         unified.scoreboard.get("companionReadinessRequireObsWebsocket"),
     )
+    _set_u_bool("BOOKING_OVERLAY_ENABLED", unified.scoreboard.get("bookingOverlayEnabled"))
+    _set_u_int(
+        "BOOKING_OVERLAY_DURATION_MS",
+        unified.scoreboard.get("bookingOverlayDurationMs"),
+    )
+    _set_u_int(
+        "BOOKING_OVERLAY_POLL_INTERVAL_SEC",
+        unified.scoreboard.get("bookingOverlayPollIntervalSec"),
+    )
+    _set_u_bool(
+        "BOOKING_OVERLAY_SUPPRESS_DURING_REPLAY",
+        unified.scoreboard.get("bookingOverlaySuppressDuringReplay"),
+    )
+    _set_u_str(
+        "BOOKING_OVERLAY_WELCOME_IMAGE",
+        unified.scoreboard.get("bookingOverlayWelcomeImage"),
+    )
+    _set_u_str(
+        "BOOKING_OVERLAY_GOODBYE_IMAGE",
+        unified.scoreboard.get("bookingOverlayGoodbyeImage"),
+    )
+    _set_u_str(
+        "BOOKING_OVERLAY_STATE_PATH",
+        unified.scoreboard.get("bookingOverlayStatePath"),
+    )
+    _set_u_str("PICKLE_PLANNER_MATCH_URL", unified.pickle_planner.get("matchUrl"))
+    _set_u_str(
+        "PICKLE_PLANNER_API_KEY_HEADER",
+        unified.pickle_planner.get("apiKeyHeader"),
+    )
+    _set_u_str("CLUB_ID", unified.worker.get("clubId"))
+    _set_u_str("COURT_ID", unified.worker.get("courtId"))
+    if (
+        "PICKLE_PLANNER_MATCH_URL" not in unified_overrides
+        and isinstance(unified.pickle_planner.get("baseUrl"), str)
+        and str(unified.pickle_planner.get("baseUrl")).strip()
+    ):
+        base = str(unified.pickle_planner.get("baseUrl")).strip().rstrip("/")
+        unified_overrides["PICKLE_PLANNER_MATCH_URL"] = f"{base}/bookings/match"
     _set_u_str("MPV_PATH", unified.obsffmpeg.get("mpvPath"))
 
     def g(key: str, default: str | None = None) -> str | None:
@@ -779,9 +835,83 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
             command_poll_interval_ms,
         )
         command_poll_interval_ms = 500
+    booking_overlay_enabled = _env_truthy(g("BOOKING_OVERLAY_ENABLED", "1"), True)
+    booking_overlay_duration_ms = _parse_positive_int(
+        g("BOOKING_OVERLAY_DURATION_MS", "30000"),
+        30000,
+        "BOOKING_OVERLAY_DURATION_MS",
+        minimum=1000,
+    )
+    booking_overlay_poll_interval_sec = _parse_positive_int(
+        g("BOOKING_OVERLAY_POLL_INTERVAL_SEC", "1800"),
+        1800,
+        "BOOKING_OVERLAY_POLL_INTERVAL_SEC",
+        minimum=60,
+    )
+    booking_overlay_suppress_during_replay = _env_truthy(
+        g("BOOKING_OVERLAY_SUPPRESS_DURING_REPLAY", "1"),
+        True,
+    )
+    booking_overlay_welcome_image = (
+        _normalize_path(
+            g("BOOKING_OVERLAY_WELCOME_IMAGE", DEFAULT_BOOKING_OVERLAY_WELCOME_IMAGE),
+        )
+        or DEFAULT_BOOKING_OVERLAY_WELCOME_IMAGE
+    )
+    booking_overlay_goodbye_image = (
+        _normalize_path(
+            g("BOOKING_OVERLAY_GOODBYE_IMAGE", DEFAULT_BOOKING_OVERLAY_GOODBYE_IMAGE),
+        )
+        or DEFAULT_BOOKING_OVERLAY_GOODBYE_IMAGE
+    )
+    booking_overlay_state_path = (
+        _normalize_path(g("BOOKING_OVERLAY_STATE_PATH", DEFAULT_BOOKING_OVERLAY_STATE_FILE))
+        or DEFAULT_BOOKING_OVERLAY_STATE_FILE
+    )
+    _bosp = Path(booking_overlay_state_path)
+    if not _bosp.is_absolute():
+        booking_overlay_state_path = str((_repo_root / _bosp).resolve())
+    _bow = Path(booking_overlay_welcome_image)
+    _bog = Path(booking_overlay_goodbye_image)
+    if not _bow.is_absolute():
+        booking_overlay_welcome_image = str((_repo_root / _bow).resolve())
+    if not _bog.is_absolute():
+        booking_overlay_goodbye_image = str((_repo_root / _bog).resolve())
+    booking_overlay_dry_run = _env_truthy(g("BOOKING_OVERLAY_DRY_RUN", "0"), False)
+    pickle_planner_match_url = (g("PICKLE_PLANNER_MATCH_URL", "") or "").strip()
+    pickle_planner_api_key = (g("PICKLE_PLANNER_API_KEY", "") or "").strip()
+    pickle_planner_api_key_header = (
+        g("PICKLE_PLANNER_API_KEY_HEADER", "x-api-key") or "x-api-key"
+    ).strip()
+    club_id = (g("CLUB_ID", "") or "").strip()
+    court_id = (g("COURT_ID", "") or "").strip()
 
     replay_enabled = _env_truthy(g("REPLAY_ENABLED"), True)
     slideshow_enabled = _env_truthy(g("SLIDESHOW_ENABLED"), True)
+    idle_timeout_ms = _parse_positive_int(
+        g("IDLE_TIMEOUT_MS", str(IDLE_TIMEOUT_MS)),
+        IDLE_TIMEOUT_MS,
+        "IDLE_TIMEOUT_MS",
+        minimum=5000,
+    )
+    slideshow_interval_ms = _parse_positive_int(
+        g("SLIDESHOW_INTERVAL_MS", str(SLIDESHOW_INTERVAL_MS)),
+        SLIDESHOW_INTERVAL_MS,
+        "SLIDESHOW_INTERVAL_MS",
+        minimum=2000,
+    )
+    slideshow_fade_duration_ms = _parse_positive_int(
+        g("SLIDESHOW_FADE_DURATION_MS", str(SLIDESHOW_FADE_DURATION_MS)),
+        SLIDESHOW_FADE_DURATION_MS,
+        "SLIDESHOW_FADE_DURATION_MS",
+        minimum=50,
+    )
+    slideshow_fade_steps = _parse_positive_int(
+        g("SLIDESHOW_FADE_STEPS", str(SLIDESHOW_FADE_STEPS)),
+        SLIDESHOW_FADE_STEPS,
+        "SLIDESHOW_FADE_STEPS",
+        minimum=1,
+    )
     scoreboard_debug = _env_truthy(g("SCOREBOARD_DEBUG"), False)
 
     heartbeat_interval_minutes = _parse_positive_int(
@@ -983,6 +1113,19 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
         command_poll_interval_ms=command_poll_interval_ms,
         worker_http_health_host=worker_http_health_host,
         worker_http_health_port=worker_http_health_port,
+        booking_overlay_enabled=booking_overlay_enabled,
+        booking_overlay_duration_ms=booking_overlay_duration_ms,
+        booking_overlay_poll_interval_sec=booking_overlay_poll_interval_sec,
+        booking_overlay_suppress_during_replay=booking_overlay_suppress_during_replay,
+        booking_overlay_welcome_image=booking_overlay_welcome_image,
+        booking_overlay_goodbye_image=booking_overlay_goodbye_image,
+        booking_overlay_state_path=booking_overlay_state_path,
+        booking_overlay_dry_run=booking_overlay_dry_run,
+        pickle_planner_match_url=pickle_planner_match_url,
+        pickle_planner_api_key=pickle_planner_api_key,
+        pickle_planner_api_key_header=pickle_planner_api_key_header,
+        club_id=club_id,
+        court_id=court_id,
         recording_session_end_info_ms=recording_session_end_info_ms,
         recording_session_end_message=recording_session_end_message,
         recording_overlay_width=recording_overlay_width,
@@ -998,6 +1141,10 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
         recording_overlay_timer_offset_y_px=recording_overlay_timer_offset_y_px,
         replay_enabled=replay_enabled,
         slideshow_enabled=slideshow_enabled,
+        idle_timeout_ms=idle_timeout_ms,
+        slideshow_interval_ms=slideshow_interval_ms,
+        slideshow_fade_duration_ms=slideshow_fade_duration_ms,
+        slideshow_fade_steps=slideshow_fade_steps,
         scoreboard_debug=scoreboard_debug,
         scoreboard_log_file=scoreboard_log_file,
         central_logs_root=central_logs_root,
@@ -1043,6 +1190,10 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
             "REPLAY_UNAVAILABLE_IMAGE",
             "REPLAY_ENABLED",
             "SLIDESHOW_ENABLED",
+            "IDLE_TIMEOUT_MS",
+            "SLIDESHOW_INTERVAL_MS",
+            "SLIDESHOW_FADE_DURATION_MS",
+            "SLIDESHOW_FADE_STEPS",
             "MPV_PATH",
             "MPV_EXIT_HOTKEY",
             "MPV_EMBEDDED",
@@ -1071,6 +1222,17 @@ def load_settings(env_file: str = DEFAULT_ENV_FILE) -> Settings:
             "COMPANION_REPLAY_IDLE_PAGE_URL",
             "COMPANION_READINESS_REQUIRE_OBS_WEBSOCKET",
             "SCOREBOARD_COMMAND_POLL_MS",
+            "BOOKING_OVERLAY_ENABLED",
+            "BOOKING_OVERLAY_DURATION_MS",
+            "BOOKING_OVERLAY_POLL_INTERVAL_SEC",
+            "BOOKING_OVERLAY_SUPPRESS_DURING_REPLAY",
+            "BOOKING_OVERLAY_WELCOME_IMAGE",
+            "BOOKING_OVERLAY_GOODBYE_IMAGE",
+            "BOOKING_OVERLAY_STATE_PATH",
+            "PICKLE_PLANNER_MATCH_URL",
+            "PICKLE_PLANNER_API_KEY_HEADER",
+            "CLUB_ID",
+            "COURT_ID",
             "OBS_WEBSOCKET_HOST",
             "OBS_WEBSOCKET_PORT",
             "OBS_WEBSOCKET_PASSWORD",
@@ -1178,6 +1340,18 @@ def summarize_settings(settings: Settings) -> str:
         f"companion_replay_idle_page_url={settings.companion_replay_idle_page_url!r}",
         f"companion_readiness_require_obs_websocket={settings.companion_readiness_require_obs_websocket}",
         f"command_poll_interval_ms={settings.command_poll_interval_ms}",
+        f"booking_overlay_enabled={settings.booking_overlay_enabled}",
+        f"booking_overlay_duration_ms={settings.booking_overlay_duration_ms}",
+        f"booking_overlay_poll_interval_sec={settings.booking_overlay_poll_interval_sec}",
+        f"booking_overlay_suppress_during_replay={settings.booking_overlay_suppress_during_replay}",
+        f"booking_overlay_welcome_image={settings.booking_overlay_welcome_image!r}",
+        f"booking_overlay_goodbye_image={settings.booking_overlay_goodbye_image!r}",
+        f"booking_overlay_state_path={settings.booking_overlay_state_path!r}",
+        f"booking_overlay_dry_run={settings.booking_overlay_dry_run}",
+        f"pickle_planner_match_url={settings.pickle_planner_match_url!r}",
+        f"pickle_planner_api_key_header={settings.pickle_planner_api_key_header!r}",
+        f"club_id={settings.club_id!r}",
+        f"court_id={settings.court_id!r}",
         f"worker_http_health_host={settings.worker_http_health_host!r}",
         f"worker_http_health_port={settings.worker_http_health_port}",
         f"idle_timeout_ms={settings.idle_timeout_ms}",

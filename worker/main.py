@@ -9,6 +9,7 @@ import sys
 import threading
 import uuid
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +46,7 @@ from replay_trigger_http import (
     run_replay_trigger_http_loop,
     serve_replay_trigger_http_blocking,
 )
-from uploader import S3Uploader
+from uploader import S3Uploader, s3_uploader_from_worker_settings
 from worker_status import WorkerStatusReporter
 from watcher import (
     ClipFileHandler,
@@ -176,12 +177,17 @@ def run_process_latest_replay_pipeline(
     job_store: JobStore | None = None,
     status_reporter: WorkerStatusReporter | None = None,
     long_clip_semaphore: threading.BoundedSemaphore | None = None,
+    queue_clip_processing: Callable[[Path], None] | None = None,
 ) -> tuple[ProcessLatestReplayResult, int]:
     """
-    Full replay-buffer path: scan/stabilize/dual-copy, then ``process_clip`` on the incoming file.
+    Full replay-buffer path: scan/stabilize/dual-copy, then either queue or run ``process_clip``.
 
-    When ``connectivity`` and related deps are omitted, builds fresh clients (CLI / standalone HTTP).
-    When provided (embedded in running worker), reuses them.
+    When ``queue_clip_processing`` is set (embedded worker HTTP ``/replay``), the incoming MP4 is
+    submitted to the same background pool as ingest/auto-sync so the HTTP response returns as soon as
+    ``INSTANTREPLAY.mkv`` is ready — uploads/DB work no longer block ``replay_on``.
+
+    When omitted (CLI ``process-latest-replay`` or standalone ``replay-trigger-http``), ``process_clip``
+    runs inline before return, preserving previous one-shot behavior.
     """
     replay_correlation = (request_id or "").strip() or str(uuid.uuid4())
     replay_done_logged = False
@@ -265,19 +271,10 @@ def run_process_latest_replay_pipeline(
     if supabase is None:
         supabase = create_supabase_client(settings)
     if primary_uploader is None:
-        primary_uploader = S3Uploader(
+        primary_uploader = s3_uploader_from_worker_settings(
+            settings,
             bucket=settings.s3_bucket,
-            region=settings.aws_region,
-            access_key_id=settings.aws_access_key_id,
-            secret_access_key=settings.aws_secret_access_key,
-            upload_retries=settings.upload_retries,
-            upload_retry_delay_seconds=settings.upload_retry_delay_seconds,
             label="primary",
-            multipart_threshold_bytes=settings.s3_multipart_threshold_bytes,
-            multipart_chunksize_bytes=settings.s3_multipart_chunksize_bytes,
-            network_retry_base_seconds=settings.network_retry_base_seconds,
-            network_retry_max_seconds=settings.network_retry_max_seconds,
-            network_retry_jitter_fraction=settings.network_retry_jitter_fraction,
         )
     if job_store is None:
         job_store = JobStore(settings.job_db_path)
@@ -287,6 +284,40 @@ def run_process_latest_replay_pipeline(
 
     assert result.incoming_path is not None
     incoming = Path(result.incoming_path)
+    if queue_clip_processing is not None:
+        logger.info(
+            "replay-processing: buffer stage ok; queueing incoming for background process_clip",
+            extra={
+                "structured": _replay_pipeline_structured(
+                    request_id,
+                    incoming_path=str(incoming),
+                    scoreboard_replay_path=result.scoreboard_replay_path,
+                )
+            },
+        )
+        queue_clip_processing(incoming)
+        logger.info(
+            "replay-processing: pipeline completed (clip queued)",
+            extra={
+                "structured": _replay_pipeline_structured(
+                    request_id,
+                    selected_source_path=result.selected_source_path,
+                    incoming_path=result.incoming_path,
+                    scoreboard_replay_path=result.scoreboard_replay_path,
+                    source_deleted=result.source_deleted,
+                )
+            },
+        )
+        _mark_replay_done(
+            outcome="success",
+            exit_code=0,
+            selected_source_path=result.selected_source_path,
+            incoming_path=result.incoming_path,
+            scoreboard_replay_path=result.scoreboard_replay_path,
+            source_deleted=result.source_deleted,
+        )
+        return result, 0
+
     try:
         process_clip(
             incoming,
@@ -593,19 +624,19 @@ def main(argv: list[str] | None = None) -> int:
 
     supabase = create_supabase_client(settings)
 
-    primary_uploader = S3Uploader(
+    primary_uploader = s3_uploader_from_worker_settings(
+        settings,
         bucket=settings.s3_bucket,
-        region=settings.aws_region,
-        access_key_id=settings.aws_access_key_id,
-        secret_access_key=settings.aws_secret_access_key,
-        upload_retries=settings.upload_retries,
-        upload_retry_delay_seconds=settings.upload_retry_delay_seconds,
         label="primary",
-        multipart_threshold_bytes=settings.s3_multipart_threshold_bytes,
-        multipart_chunksize_bytes=settings.s3_multipart_chunksize_bytes,
-        network_retry_base_seconds=settings.network_retry_base_seconds,
-        network_retry_max_seconds=settings.network_retry_max_seconds,
-        network_retry_jitter_fraction=settings.network_retry_jitter_fraction,
+    )
+    thumbnail_uploader = (
+        primary_uploader
+        if settings.s3_thumbnail_bucket == settings.s3_bucket
+        else s3_uploader_from_worker_settings(
+            settings,
+            bucket=settings.s3_thumbnail_bucket,
+            label="thumbnail",
+        )
     )
 
     job_store = JobStore(settings.job_db_path)
@@ -645,6 +676,16 @@ def main(argv: list[str] | None = None) -> int:
 
     job_queue = ClipJobQueue(settings)
     stop = threading.Event()
+
+    def submit_job(path: Path) -> None:
+        normalized = _normalize_path(path)
+        if is_copying_temp_clip(normalized, settings):
+            logger.debug(
+                "Submit skipped: ingest temp file (.copying)",
+                extra={"structured": {"path": str(normalized)}},
+            )
+            return
+        job_queue.submit(normalized)
 
     def _incident_engine_enabled() -> bool:
         raw = os.environ.get("REPLAYTROVE_INCIDENT_ENGINE", "1").strip().lower()
@@ -690,6 +731,7 @@ def main(argv: list[str] | None = None) -> int:
                 job_store=job_store,
                 status_reporter=status_reporter,
                 long_clip_semaphore=long_clip_sem,
+                queue_clip_processing=submit_job,
             )
 
         def _replay_trigger_http_main() -> None:
@@ -717,16 +759,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         replay_trigger_thread.start()
 
-    def submit_job(path: Path) -> None:
-        normalized = _normalize_path(path)
-        if is_copying_temp_clip(normalized, settings):
-            logger.debug(
-                "Submit skipped: ingest temp file (.copying)",
-                extra={"structured": {"path": str(normalized)}},
-            )
-            return
-        job_queue.submit(normalized)
-
     def worker_loop() -> None:
         logger.info("Worker thread started")
         while not stop.is_set():
@@ -744,6 +776,7 @@ def main(argv: list[str] | None = None) -> int:
                     long_clip_semaphore=long_clip_sem,
                     connectivity=connectivity,
                     on_original_upload_complete=status_reporter.record_original_upload_success,
+                    thumbnail_uploader=thumbnail_uploader,
                 )
             except Exception:
                 logger.exception(
@@ -894,6 +927,7 @@ def main(argv: list[str] | None = None) -> int:
                         long_clip_semaphore=long_clip_sem,
                         connectivity=connectivity,
                         on_original_upload_complete=upload_cb,
+                        thumbnail_uploader=thumbnail_uploader,
                     )
                 except Exception as exc:
                     logger.exception(

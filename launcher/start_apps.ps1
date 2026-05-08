@@ -8,9 +8,13 @@
   Production: pythonw; worker/encoder Hidden; scoreboard Minimized (Tk must not use Hidden); OBS Normal.
   REPLAYTROVE_PAUSE_ON_ERROR=0 -> do not pause on validation failure (e.g. scheduled task).
 
-  When Scoreboard, Encoder, and OBS are all enabled, an interactive session keeps running after
-  validation and polls scoreboard_status.json (screensaver_active). Screensaver on stops Encoder+OBS;
-  screensaver off restarts them. REPLAYTROVE_SCOREBOARD_STATUS_WATCH=0 disables; =1 forces on.
+  After validation, the supervisor keeps running and polls scoreboard_status.json (screensaver_active).
+  Worker, encoder, scoreboard, and OBS always start with the supervisor (not configurable). Screensaver
+  does not stop Encoder or OBS; leaving screensaver still promotes encoder_watchdog and obs to running
+  if needed and starts them (e.g. after an operator stop or crash while the slideshow was up).
+  REPLAYTROVE_SCOREBOARD_STATUS_WATCH=0 disables status polling; =1 forces on. Use Launcher UI intents
+  to stop/start individual apps after bootstrap; optional apps (cleaner, control app, launcher UI)
+  still honor launcher.enable* in unified config / env.
 
   Scoreboard focus diagnostics: REPLAYTROVE_SCOREBOARD_STATUS_STALE_SEC (default 60) treats
   scoreboard_status.json updated_at older than N seconds as stale. Optional one-shot restore:
@@ -22,6 +26,7 @@ $ErrorActionPreference = 'Stop'
 
 $script:UnifiedResolutionNotes = @()
 $script:DesiredStateMap = $null
+$script:OperatorHoldMap = $null
 $UnifiedSnapshot = Get-ReplayTroveUnifiedConfig
 $UnifiedData = if ($UnifiedSnapshot.Data -is [System.Collections.IDictionary]) { $UnifiedSnapshot.Data } else { @{} }
 $UnifiedRoot = Get-UnifiedNestedValue -Object $UnifiedData -Path 'general.replayTroveRoot'
@@ -84,26 +89,16 @@ function Test-AppEnabled {
   }
 }
 
-$EnableWorkerObj = Resolve-UnifiedFirstBool -UnifiedData $UnifiedData -UnifiedPath 'launcher.enableWorker' -EnvName 'REPLAYTROVE_ENABLE_WORKER' -Default $true -Label 'EnableWorker'
-$EnableWorker = $EnableWorkerObj.Value
-$script:UnifiedResolutionNotes += "$($EnableWorkerObj.Label)=$($EnableWorkerObj.Source)"
-$EnableEncoderObj = Resolve-UnifiedFirstBool -UnifiedData $UnifiedData -UnifiedPath 'launcher.enableEncoder' -EnvName 'REPLAYTROVE_ENABLE_ENCODER' -Default $true -Label 'EnableEncoder'
-$EnableEncoder = $EnableEncoderObj.Value
-$script:UnifiedResolutionNotes += "$($EnableEncoderObj.Label)=$($EnableEncoderObj.Source)"
+# Worker, encoder, scoreboard, and OBS always participate in supervisor bootstrap (not configurable via JSON/env).
+$script:UnifiedResolutionNotes += 'CoreLauncherApps=worker,encoder,scoreboard,obs (fixed: always on at supervisor start)'
 $EnableCleanerObj = Resolve-UnifiedFirstBool -UnifiedData $UnifiedData -UnifiedPath 'launcher.enableCleaner' -EnvName 'REPLAYTROVE_ENABLE_CLEANER' -Default $true -Label 'EnableCleaner'
 $EnableCleaner = $EnableCleanerObj.Value
 $script:UnifiedResolutionNotes += "$($EnableCleanerObj.Label)=$($EnableCleanerObj.Source)"
-$EnableObsObj = Resolve-UnifiedFirstBool -UnifiedData $UnifiedData -UnifiedPath 'launcher.enableObs' -EnvName 'REPLAYTROVE_ENABLE_OBS' -Default $true -Label 'EnableObs'
-$EnableObs = $EnableObsObj.Value
-$script:UnifiedResolutionNotes += "$($EnableObsObj.Label)=$($EnableObsObj.Source)"
 $rawEnableControlApp = [Environment]::GetEnvironmentVariable('REPLAYTROVE_ENABLE_CONTROL_APP')
 $defaultEnableControlApp = if ([string]::IsNullOrWhiteSpace($rawEnableControlApp)) { Test-AppEnabled -Name 'STREAMDECK' } else { Test-AppEnabled -Name 'CONTROL_APP' }
 $EnableControlAppObj = Resolve-UnifiedFirstBool -UnifiedData $UnifiedData -UnifiedPath 'launcher.enableControlApp' -EnvName 'REPLAYTROVE_ENABLE_CONTROL_APP' -Default $defaultEnableControlApp -Label 'EnableControlApp'
 $EnableControlApp = $EnableControlAppObj.Value
 $script:UnifiedResolutionNotes += "$($EnableControlAppObj.Label)=$($EnableControlAppObj.Source)"
-$EnableScoreboardObj = Resolve-UnifiedFirstBool -UnifiedData $UnifiedData -UnifiedPath 'launcher.enableScoreboard' -EnvName 'REPLAYTROVE_ENABLE_SCOREBOARD' -Default $true -Label 'EnableScoreboard'
-$EnableScoreboard = $EnableScoreboardObj.Value
-$script:UnifiedResolutionNotes += "$($EnableScoreboardObj.Label)=$($EnableScoreboardObj.Source)"
 $EnableLauncherUiObj = Resolve-UnifiedFirstBool -UnifiedData $UnifiedData -UnifiedPath 'launcher.enableLauncherUi' -EnvName 'REPLAYTROVE_ENABLE_LAUNCHER_UI' -Default $true -Label 'EnableLauncherUi'
 $EnableLauncherUi = $EnableLauncherUiObj.Value
 $script:UnifiedResolutionNotes += "$($EnableLauncherUiObj.Label)=$($EnableLauncherUiObj.Source)"
@@ -172,6 +167,10 @@ $script:UnifiedResolutionNotes += "$($SupervisionWindowSecObj.Label)=$($Supervis
 $SupervisionBaseBackoffSecObj = Resolve-UnifiedFirstInt -UnifiedData $UnifiedData -UnifiedPath 'launcher.supervisionBaseBackoffSec' -EnvName 'REPLAYTROVE_SUPERVISION_BASE_BACKOFF_SEC' -Default 5 -Minimum 1 -Label 'SupervisionBaseBackoffSec'
 $SupervisionBaseBackoffSec = $SupervisionBaseBackoffSecObj.Value
 $script:UnifiedResolutionNotes += "$($SupervisionBaseBackoffSecObj.Label)=$($SupervisionBaseBackoffSecObj.Source)"
+# When false, supervision never restarts scoreboard after exit/kill; use launcher intent/UI to start again.
+$SupervisionAutoRestartScoreboardObj = Resolve-UnifiedFirstBool -UnifiedData $UnifiedData -UnifiedPath 'launcher.supervisionAutoRestartScoreboard' -EnvName 'REPLAYTROVE_SUPERVISION_AUTO_RESTART_SCOREBOARD' -Default $true -Label 'SupervisionAutoRestartScoreboard'
+$SupervisionAutoRestartScoreboard = $SupervisionAutoRestartScoreboardObj.Value
+$script:UnifiedResolutionNotes += "$($SupervisionAutoRestartScoreboardObj.Label)=$($SupervisionAutoRestartScoreboardObj.Source)"
 $WorkerStatusJsonPathObj = Resolve-UnifiedFirstString -UnifiedData $UnifiedData -UnifiedPath 'worker.workerStatusJsonPath' -EnvName 'WORKER_STATUS_JSON_PATH' -Default (Join-Path $UnifiedRoot 'status.json') -Label 'WorkerStatusJsonPath'
 $WorkerStatusJsonPath = $WorkerStatusJsonPathObj.Value
 $script:UnifiedResolutionNotes += "$($WorkerStatusJsonPathObj.Label)=$($WorkerStatusJsonPathObj.Source)"
@@ -227,9 +226,9 @@ function Write-LauncherLog {
 }
 
 function Test-ProcessIdAlive {
-  param([object]$Pid)
+  param([object]$ProcessId)
   try {
-    $pidNum = [int]$Pid
+    $pidNum = [int]$ProcessId
     return $null -ne (Get-Process -Id $pidNum -ErrorAction SilentlyContinue)
   } catch {
     return $false
@@ -308,7 +307,7 @@ function Try-ClaimOwnerLease {
     }
   }
   $ageSec = if ($null -eq $existingUpdated) { [double]::PositiveInfinity } else { ([DateTime]::UtcNow - $existingUpdated).TotalSeconds }
-  $existingPidAlive = Test-ProcessIdAlive -Pid $existingPid
+  $existingPidAlive = Test-ProcessIdAlive -ProcessId $existingPid
   $fresh = ($ageSec -le $OwnerLeaseStaleSec)
   $occupied = ($fresh -and $existingPidAlive -and $existingOwner -ne $script:OwnerLeaseId)
 
@@ -822,7 +821,6 @@ function Invoke-ScoreboardFocus {
 }
 
 function Test-ScoreboardStatusWatchDesired {
-  if (-not ($EnableScoreboard -and $EnableEncoder -and $EnableObs)) { return $false }
   return [bool]$ScoreboardStatusWatch
 }
 
@@ -992,10 +990,18 @@ function Stop-Obs64ForLauncher {
 }
 
 function Start-EncoderWatchdogForLauncher {
+  if (Test-PythonAppRunning -FolderPath $EncoderDir -ScriptName 'encoder_watchdog.py') {
+    Write-LauncherLog 'Encoder watchdog start skipped: encoder_watchdog.py already running.'
+    return
+  }
   Start-Process -WorkingDirectory $EncoderDir -FilePath $pyEncoder -ArgumentList @('encoder_watchdog.py') -WindowStyle $pyHeadlessWindowStyle | Out-Null
 }
 
 function Start-ObsForLauncher {
+  if ($null -ne (Get-Process -Name 'obs64' -ErrorAction SilentlyContinue)) {
+    Write-LauncherLog 'OBS start skipped: obs64 already running.'
+    return
+  }
   if (Test-Path -LiteralPath $ObsSentinel) {
     try {
       Remove-Item -LiteralPath $ObsSentinel -Recurse -Force -ErrorAction Stop
@@ -1042,11 +1048,7 @@ function Invoke-ScoreboardStatusWatchTick {
     if ($isEdgeTrigger -or $isNewSignalKey) {
       $reason = if ([string]::IsNullOrWhiteSpace($status.ReplayObsRestartReason)) { '(unspecified)' } else { $status.ReplayObsRestartReason }
       Write-LauncherLog "Scoreboard status watch: replay OBS restart requested=true (reason=$reason, updated_at=$signalKey, edge=$isEdgeTrigger, new_key=$isNewSignalKey)."
-      if ($EnableObs) {
-        Invoke-ObsRestartForReplaySignal -Reason $status.ReplayObsRestartReason
-      } else {
-        Write-LauncherLog "Replay OBS restart signal ignored because OBS is disabled (reason=$reason)."
-      }
+      Invoke-ObsRestartForReplaySignal -Reason $status.ReplayObsRestartReason
       Acknowledge-ReplayObsRestartSignal -Path $StatusPath -StatusPayload $status
       if (-not [string]::IsNullOrWhiteSpace($signalKey)) {
         $script:ScoreboardStatusLastReplaySignalKey = $signalKey
@@ -1056,25 +1058,23 @@ function Invoke-ScoreboardStatusWatchTick {
   $script:ScoreboardStatusLastReplayRequested = $replayRequested
 
   if ($null -eq $script:ScoreboardStatusLastScreensaver) {
-    if ($current) {
-      Write-LauncherLog 'Initial scoreboard status: screensaver active; stopping Encoder and OBS.'
-      Stop-EncoderStackForLauncher
-      Stop-Obs64ForLauncher
-    }
     $script:ScoreboardStatusLastScreensaver = $current
     return
   }
   if ($current -eq $script:ScoreboardStatusLastScreensaver) { return }
   $script:ScoreboardStatusLastScreensaver = $current
   if ($current) {
-    Write-LauncherLog 'Scoreboard entered screensaver; stopping Encoder and OBS.'
-    Stop-EncoderStackForLauncher
-    Stop-Obs64ForLauncher
+    Write-LauncherLog 'Scoreboard entered screensaver; Encoder and OBS remain running.'
+    return
   } else {
-    Write-LauncherLog 'Scoreboard left screensaver; restarting Encoder and OBS.'
-    [void](Invoke-ManagedStartIfDesiredRunning -ComponentName 'encoder_watchdog' -Source 'scoreboard_screensaver_exit' -StartAction { Start-EncoderWatchdogForLauncher })
+    Write-LauncherLog 'Scoreboard left screensaver; promoting encoder_watchdog and obs to running and starting processes.'
+    if ($null -ne $script:DesiredStateMap) {
+      Set-DesiredState -DesiredStateMap $script:DesiredStateMap -ComponentName 'encoder_watchdog' -DesiredState 'running' -Source 'scoreboard_screensaver_exit'
+      Set-DesiredState -DesiredStateMap $script:DesiredStateMap -ComponentName 'obs' -DesiredState 'running' -Source 'scoreboard_screensaver_exit'
+    }
+    Start-EncoderWatchdogForLauncher
     Start-Sleep -Milliseconds 400
-    [void](Invoke-ManagedStartIfDesiredRunning -ComponentName 'obs' -Source 'scoreboard_screensaver_exit' -StartAction { Start-ObsForLauncher })
+    Start-ObsForLauncher
   }
 }
 
@@ -1128,7 +1128,7 @@ function Stop-WorkerForLauncher {
 }
 
 function Start-ScoreboardForLauncher {
-  if ($EnableObs -and -not (Get-Process -Name 'obs64' -ErrorAction SilentlyContinue)) {
+  if (-not (Get-Process -Name 'obs64' -ErrorAction SilentlyContinue)) {
     Write-LauncherLog 'SUPERVISION: OBS is down while restarting scoreboard; attempting OBS start first.'
     [void](Invoke-ManagedStartIfDesiredRunning -ComponentName 'obs' -Source 'scoreboard_prestart_obs' -StartAction { Start-ObsForLauncher })
     [void](Wait-Readiness -Label 'OBS (obs64) pre-scoreboard-restart' -TimeoutSec $ReadinessObsSec -IntervalSec $ReadinessIntervalSec -Test {
@@ -1171,18 +1171,8 @@ function Invoke-LauncherManagedTargetAction {
     return [pscustomobject]@{ Ok = $false; Message = "unsupported action: $Action" }
   }
 
-  $enabledCheck = switch ($Target) {
-    'worker' { $EnableWorker; break }
-    'scoreboard' { $EnableScoreboard; break }
-    'obs' { $EnableObs; break }
-    'encoder_watchdog' { $EnableEncoder; break }
-    default { $null }
-  }
-  if ($null -eq $enabledCheck) {
+  if ($Target -notin @('worker', 'scoreboard', 'obs', 'encoder_watchdog')) {
     return [pscustomobject]@{ Ok = $false; Message = "unsupported target: $Target" }
-  }
-  if (-not $enabledCheck) {
-    return [pscustomobject]@{ Ok = $false; Message = "$Target disabled by configuration" }
   }
 
   $isRunning = Test-LauncherManagedTargetRunning -Target $Target
@@ -1305,14 +1295,14 @@ function New-HealthResult {
 
 function Test-TcpEndpoint {
   param(
-    [string]$Host,
+    [string]$HostName,
     [int]$Port,
     [int]$TimeoutMs = 1500
   )
   try {
     $client = New-Object System.Net.Sockets.TcpClient
     try {
-      $iar = $client.BeginConnect($Host, $Port, $null, $null)
+      $iar = $client.BeginConnect($HostName, $Port, $null, $null)
       if (-not $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) {
         return $false
       }
@@ -1328,11 +1318,11 @@ function Test-TcpEndpoint {
 
 function Invoke-HttpHealthCheck {
   param(
-    [string]$Host,
+    [string]$HostName,
     [int]$Port
   )
   try {
-    $resp = Invoke-WebRequest -UseBasicParsing -Uri ("http://{0}:{1}/health" -f $Host, $Port) -TimeoutSec 2 -Method GET
+    $resp = Invoke-WebRequest -UseBasicParsing -Uri ("http://{0}:{1}/health" -f $HostName, $Port) -TimeoutSec 2 -Method GET
     return ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300)
   } catch {
     return $false
@@ -1400,7 +1390,7 @@ function Get-WorkerHealth {
     }
   }
   if ($WorkerReplayTriggerEnabled) {
-    if (-not (Invoke-HttpHealthCheck -Host $WorkerReplayHost -Port $WorkerReplayPort)) {
+    if (-not (Invoke-HttpHealthCheck -HostName $WorkerReplayHost -Port $WorkerReplayPort)) {
       return New-HealthResult -Classification 'running_but_unhealthy_or_stale' -Reason ("worker_http_health_unreachable host={0} port={1}" -f $WorkerReplayHost, $WorkerReplayPort)
     }
   }
@@ -1409,6 +1399,21 @@ function Get-WorkerHealth {
 
 function Get-ScoreboardHealth {
   if (-not (Test-PythonAppRunning -FolderPath $ScoreboardDir -ScriptName 'main.py')) {
+    # Graceful shutdown: scoreboard wrote scoreboard_running=false before exit (teardown).
+    $statusDead = Read-JsonFileSafe -Path $ScoreboardStatusJson
+    if ($statusDead.Exists -and -not $statusDead.Error -and $null -ne $statusDead.Parsed) {
+      $srp = $statusDead.Parsed.PSObject.Properties['scoreboard_running']
+      if ($null -ne $srp -and -not [bool]$statusDead.Parsed.scoreboard_running) {
+        $updDead = Try-ParseUtcDate -Value $statusDead.Parsed.updated_at
+        if ($null -ne $updDead) {
+          $ageDead = ([DateTime]::UtcNow - $updDead).TotalSeconds
+          $graceDead = [Math]::Max(180, [int]$ScoreboardStatusStaleSec * 3)
+          if ($ageDead -le $graceDead) {
+            return New-HealthResult -Classification 'stopped_cleanly' -Reason 'scoreboard_status_graceful_shutdown'
+          }
+        }
+      }
+    }
     return New-HealthResult -Classification 'not_running' -Reason 'scoreboard_process_missing'
   }
   $status = Read-JsonFileSafe -Path $ScoreboardStatusJson
@@ -1436,24 +1441,21 @@ function Get-ObsHealth {
   if ($null -eq (Get-Process -Name 'obs64' -ErrorAction SilentlyContinue)) {
     return New-HealthResult -Classification 'not_running' -Reason 'obs_process_missing'
   }
-  if (-not (Test-TcpEndpoint -Host $ObsWebsocketHost -Port $ObsWebsocketPort -TimeoutMs 1200)) {
+  if (-not (Test-TcpEndpoint -HostName $ObsWebsocketHost -Port $ObsWebsocketPort -TimeoutMs 1200)) {
     return New-HealthResult -Classification 'running_but_unhealthy_or_stale' -Reason ("obs_websocket_unreachable host={0} port={1}" -f $ObsWebsocketHost, $ObsWebsocketPort)
   }
   return New-HealthResult -Classification 'running_and_healthy' -Reason 'obs_websocket_reachable'
 }
 
 function Get-SupervisionComponents {
-  $items = @()
-  if ($EnableWorker) {
-    $items += [pscustomobject]@{
+  @(
+    [pscustomobject]@{
       Name = 'worker'
       Probe = { Get-WorkerHealth }
       Start = { [void](Invoke-ManagedStartIfDesiredRunning -ComponentName 'worker' -Source 'supervision_health_restart' -StartAction { Start-WorkerForLauncher }) }
       AllowRestart = { return $true }
     }
-  }
-  if ($EnableEncoder) {
-    $items += [pscustomobject]@{
+    [pscustomobject]@{
       Name = 'encoder_watchdog'
       Probe = {
         if (Test-PythonAppRunning -FolderPath $EncoderDir -ScriptName 'encoder_watchdog.py') {
@@ -1463,26 +1465,21 @@ function Get-SupervisionComponents {
         }
       }
       Start = { [void](Invoke-ManagedStartIfDesiredRunning -ComponentName 'encoder_watchdog' -Source 'supervision_health_restart' -StartAction { Start-EncoderWatchdogForLauncher }) }
-      AllowRestart = { return -not $script:ScoreboardScreensaverActive }
+      AllowRestart = { return $true }
     }
-  }
-  if ($EnableObs) {
-    $items += [pscustomobject]@{
+    [pscustomobject]@{
       Name = 'obs'
       Probe = { Get-ObsHealth }
       Start = { [void](Invoke-ManagedStartIfDesiredRunning -ComponentName 'obs' -Source 'supervision_health_restart' -StartAction { Start-ObsForLauncher }) }
-      AllowRestart = { return -not $script:ScoreboardScreensaverActive }
+      AllowRestart = { return $true }
     }
-  }
-  if ($EnableScoreboard) {
-    $items += [pscustomobject]@{
+    [pscustomobject]@{
       Name = 'scoreboard'
       Probe = { Get-ScoreboardHealth }
       Start = { [void](Invoke-ManagedStartIfDesiredRunning -ComponentName 'scoreboard' -Source 'supervision_health_restart' -StartAction { Start-ScoreboardForLauncher }) }
-      AllowRestart = { return $true }
+      AllowRestart = { return $SupervisionAutoRestartScoreboard }
     }
-  }
-  return $items
+  )
 }
 
 function Get-ManagedDesiredStateComponentNames {
@@ -1496,6 +1493,41 @@ function New-DesiredStateMap {
     $map[$name] = 'running'
   }
   return $map
+}
+
+function New-OperatorHoldMap {
+  $map = @{}
+  foreach ($name in Get-ManagedDesiredStateComponentNames) {
+    $map[$name] = $false
+  }
+  return $map
+}
+
+function Get-OperatorHold {
+  param([string]$ComponentName)
+  if ($null -eq $script:OperatorHoldMap) { return $false }
+  if (-not $script:OperatorHoldMap.ContainsKey($ComponentName)) { return $false }
+  return [bool]$script:OperatorHoldMap[$ComponentName]
+}
+
+function Apply-OperatorHoldIntentRule {
+  param(
+    [string]$ComponentName,
+    [string]$DesiredState,
+    [string]$Source
+  )
+  if ($null -eq $script:OperatorHoldMap) { return $false }
+  if (-not $script:OperatorHoldMap.ContainsKey($ComponentName)) { return $false }
+  $prev = [bool]$script:OperatorHoldMap[$ComponentName]
+  if ($Source -eq 'intent_stop' -and $DesiredState -eq 'stopped') {
+    $script:OperatorHoldMap[$ComponentName] = $true
+  } elseif (
+    ($Source -match '^intent_(start|restart)$' -or $Source -eq 'scoreboard_screensaver_exit') -and
+    $DesiredState -eq 'running'
+  ) {
+    $script:OperatorHoldMap[$ComponentName] = $false
+  }
+  return ([bool]$script:OperatorHoldMap[$ComponentName] -ne $prev)
 }
 
 function Get-DesiredState {
@@ -1520,12 +1552,20 @@ function Set-DesiredState {
   if ($null -eq $DesiredStateMap) { return }
   if ($DesiredState -notin @('running', 'stopped')) { return }
   $old = Get-DesiredState -DesiredStateMap $DesiredStateMap -ComponentName $ComponentName
+  $holdChanged = $false
+  if ($null -ne $script:OperatorHoldMap -and [object]::ReferenceEquals($DesiredStateMap, $script:DesiredStateMap)) {
+    $holdChanged = Apply-OperatorHoldIntentRule -ComponentName $ComponentName -DesiredState $DesiredState -Source $Source
+  }
+  $desiredChanged = ($old -ne $DesiredState)
   $DesiredStateMap[$ComponentName] = $DesiredState
-  if ($old -ne $DesiredState) {
+  if ($desiredChanged) {
     Write-LauncherLog "SUPERVISION DESIRED_STATE: component=$ComponentName old=$old new=$DesiredState source=$Source"
-    if ($null -ne $script:DesiredStateMap -and [object]::ReferenceEquals($DesiredStateMap, $script:DesiredStateMap)) {
-      Write-SupervisionDesiredStateSnapshot -Reason $Source
-    }
+  }
+  if ($holdChanged -and -not $desiredChanged) {
+    Write-LauncherLog "SUPERVISION OPERATOR_HOLD: component=$ComponentName hold=$(Get-OperatorHold -ComponentName $ComponentName) source=$Source"
+  }
+  if (($desiredChanged -or $holdChanged) -and $null -ne $script:DesiredStateMap -and [object]::ReferenceEquals($DesiredStateMap, $script:DesiredStateMap)) {
+    Write-SupervisionDesiredStateSnapshot -Reason $Source
   }
 }
 
@@ -1533,14 +1573,17 @@ function Write-SupervisionDesiredStateSnapshot {
   param([string]$Reason = 'update')
   if ($null -eq $script:DesiredStateMap) { return }
   $comps = [ordered]@{}
+  $holds = [ordered]@{}
   foreach ($name in Get-ManagedDesiredStateComponentNames) {
     $comps[$name] = Get-DesiredState -DesiredStateMap $script:DesiredStateMap -ComponentName $name
+    $holds[$name] = Get-OperatorHold -ComponentName $name
   }
   $payload = [ordered]@{
-    schema_version = 1
+    schema_version = 2
     updated_at = [DateTime]::UtcNow.ToString('o')
     update_reason = $Reason
     components = $comps
+    operator_hold = $holds
   }
   try {
     $parent = Split-Path -Path $SupervisionDesiredStatePath -Parent
@@ -1598,6 +1641,27 @@ function Merge-SupervisionDesiredStateFromSnapshot {
     $applied++
   }
   Write-LauncherLog "SUPERVISION DESIRED_STATE SNAPSHOT: loaded path=$SupervisionDesiredStatePath applied_entries=$applied"
+  if ($null -eq $script:OperatorHoldMap) { return }
+  $holdBlob = $null
+  if ($null -ne $j.PSObject.Properties['operator_hold']) {
+    $holdBlob = $j.operator_hold
+  }
+  if ($null -eq $holdBlob) {
+    Write-LauncherLog 'SUPERVISION DESIRED_STATE SNAPSHOT: no operator_hold in file; all holds false (legacy snapshot).'
+    return
+  }
+  $holdProps = @($holdBlob.PSObject.Properties | ForEach-Object { $_.Name })
+  $holdApplied = 0
+  foreach ($name in Get-ManagedDesiredStateComponentNames) {
+    if ($holdProps -notcontains $name) { continue }
+    try {
+      $script:OperatorHoldMap[$name] = [bool]$holdBlob.$name
+      $holdApplied++
+    } catch {
+      continue
+    }
+  }
+  Write-LauncherLog "SUPERVISION DESIRED_STATE SNAPSHOT: loaded operator_hold entries=$holdApplied"
 }
 
 function New-SupervisionStateMap {
@@ -1633,6 +1697,7 @@ function Write-SupervisionStatusSnapshot {
     $s = $StateMap[$name]
     $payload.components[$name] = [ordered]@{
       desired_state = Get-DesiredState -DesiredStateMap $DesiredStateMap -ComponentName $name
+      operator_hold = Get-OperatorHold -ComponentName $name
       last_observed_at = if ($s.LastObservedAt -eq [DateTime]::MinValue) { $null } else { $s.LastObservedAt.ToUniversalTime().ToString('o') }
       last_classification = $s.LastClassification
       last_reason = $s.LastReason
@@ -1687,6 +1752,19 @@ function Invoke-SupervisionTick {
       continue
     }
 
+    if ($classification -eq 'stopped_cleanly') {
+      if ($desiredState -ne 'stopped') {
+        Set-DesiredState -DesiredStateMap $DesiredStateMap -ComponentName $name -DesiredState 'stopped' -Source 'scoreboard_graceful_shutdown'
+      }
+      $state.ConsecutiveUnhealthy = 0
+      if ($state.LastLoggedClassification -ne $classification -or $state.LastLoggedReason -ne $reason) {
+        Write-LauncherLog "SUPERVISION HEALTH: component=$name classification=$classification reason=$reason decision=honor_shutdown (desired_state=stopped)"
+        $state.LastLoggedClassification = $classification
+        $state.LastLoggedReason = $reason
+      }
+      continue
+    }
+
     if ($classification -eq 'running_but_unhealthy_or_stale') {
       $state.ConsecutiveUnhealthy += 1
     } else {
@@ -1694,7 +1772,8 @@ function Invoke-SupervisionTick {
     }
 
     if ($desiredState -eq 'stopped') {
-      Write-LauncherLog "SUPERVISION HEALTH: component=$name desired_state=stopped classification=$classification reason=$reason decision=restart_suppressed"
+      $oh = Get-OperatorHold -ComponentName $name
+      Write-LauncherLog "SUPERVISION HEALTH: component=$name desired_state=stopped operator_hold=$oh classification=$classification reason=$reason decision=restart_suppressed"
       $state.LastLoggedClassification = $classification
       $state.LastLoggedReason = $reason
       continue
@@ -1773,24 +1852,17 @@ $pyWorker = Get-PythonInterpreter $WorkerDir
 $pyScore  = Get-PythonInterpreter $ScoreboardDir
 $pyEncoder = Get-PythonInterpreter $EncoderDir
 
-$preflight = @()
-if ($EnableWorker) {
-  $preflight += @{ Path = (Join-Path $WorkerDir 'main.py'); Label = 'Worker main.py' }
-  $preflight += @{ Path = $pyWorker; Label = 'Worker venv Python' }
-}
-if ($EnableScoreboard) {
-  $preflight += @{ Path = (Join-Path $ScoreboardDir 'main.py'); Label = 'Scoreboard main.py' }
-  $preflight += @{ Path = $pyScore; Label = 'Scoreboard venv Python' }
-}
-if ($EnableEncoder) {
-  $preflight += @{ Path = (Join-Path $EncoderDir 'encoder_watchdog.py'); Label = 'Encoder encoder_watchdog.py' }
-  $preflight += @{ Path = $pyEncoder; Label = 'Encoder venv Python' }
-}
+$preflight = @(
+  @{ Path = (Join-Path $WorkerDir 'main.py'); Label = 'Worker main.py' }
+  @{ Path = $pyWorker; Label = 'Worker venv Python' }
+  @{ Path = (Join-Path $ScoreboardDir 'main.py'); Label = 'Scoreboard main.py' }
+  @{ Path = $pyScore; Label = 'Scoreboard venv Python' }
+  @{ Path = (Join-Path $EncoderDir 'encoder_watchdog.py'); Label = 'Encoder encoder_watchdog.py' }
+  @{ Path = $pyEncoder; Label = 'Encoder venv Python' }
+  @{ Path = $ObsExe; Label = 'OBS executable' }
+)
 if ($EnableCleaner -and $CleanerOwnerMode -eq 'launcher') {
   $preflight += @{ Path = $CleanerScript; Label = 'Cleaner Bee script' }
-}
-if ($EnableObs) {
-  $preflight += @{ Path = $ObsExe; Label = 'OBS executable' }
 }
 if ($EnableControlApp) {
   $preflight += @{ Path = $ControlAppExe; Label = 'Control app executable' }
@@ -1811,7 +1883,7 @@ foreach ($item in $preflight) {
 }
 
 # --- Sentinel (equivalent to: del /f /q "%OBS_SENTINEL%") ---
-if ($EnableObs -and (Test-Path -LiteralPath $ObsSentinel)) {
+if (Test-Path -LiteralPath $ObsSentinel) {
   try {
     Remove-Item -LiteralPath $ObsSentinel -Recurse -Force -ErrorAction Stop
     Write-LauncherLog "OBS sentinel removed: $ObsSentinel"
@@ -1830,19 +1902,25 @@ $obsWindowStyle = 'Normal'
 # --verbose: richer OBS logs under %APPDATA%\obs-studio\logs (Help → Log Files in OBS).
 $obsArgs = @('--disable-shutdown-check', '--disable-missing-files-check', '--startreplaybuffer', '--verbose')
 
-if ($EnableWorker) {
-  Write-LauncherLog 'Launching worker...'
-  Start-Process -WorkingDirectory $WorkerDir -FilePath $pyWorker -ArgumentList @('main.py') -WindowStyle $pyHeadlessWindowStyle | Out-Null
-} else {
-  Write-LauncherLog 'Skipping worker (disabled by REPLAYTROVE_ENABLE_WORKER=0)'
+# Claim supervision lease before spawning any child processes. Otherwise two Task Scheduler
+# (or manual) invocations of this script can each pass readiness — both run Start-Process for
+# encoder_watchdog — before either reaches Try-ClaimOwnerLease near the supervision loop.
+if ($SupervisionEnabled) {
+  Write-LauncherLog "SUPERVISION OWNER LEASE (pre-bootstrap): path=$SupervisionOwnerLeasePath timeout_sec=$OwnerLeaseStaleSec"
+  if (-not (Try-ClaimOwnerLease)) {
+    Write-LauncherLog 'SUPERVISION: another launcher holds an active lease; exiting before starting apps (duplicate start prevented).'
+    if ($PauseOnError -and [Environment]::UserInteractive) {
+      Wait-LauncherAck 'Duplicate launcher prevented; press Enter to exit'
+    }
+    exit 4
+  }
 }
 
-if ($EnableEncoder) {
-  Write-LauncherLog 'Launching encoder watchdog...'
-  Start-Process -WorkingDirectory $EncoderDir -FilePath $pyEncoder -ArgumentList @('encoder_watchdog.py') -WindowStyle $pyHeadlessWindowStyle | Out-Null
-} else {
-  Write-LauncherLog 'Skipping encoder (disabled by REPLAYTROVE_ENABLE_ENCODER=0)'
-}
+Write-LauncherLog 'Launching worker...'
+Start-Process -WorkingDirectory $WorkerDir -FilePath $pyWorker -ArgumentList @('main.py') -WindowStyle $pyHeadlessWindowStyle | Out-Null
+
+Write-LauncherLog 'Launching encoder watchdog...'
+Start-Process -WorkingDirectory $EncoderDir -FilePath $pyEncoder -ArgumentList @('encoder_watchdog.py') -WindowStyle $pyHeadlessWindowStyle | Out-Null
 
 $cleanerProc = $null
 if ($EnableCleaner -and $CleanerOwnerMode -eq 'launcher') {
@@ -1865,30 +1943,22 @@ if ($EnableCleaner -and $CleanerOwnerMode -eq 'launcher') {
   Write-LauncherLog 'Skipping Cleaner Bee (disabled by REPLAYTROVE_ENABLE_CLEANER=0)'
 }
 
-if ($EnableWorker) {
-  $workerReady = Wait-Readiness -Label 'Worker (python main.py)' -TimeoutSec $ReadinessPythonSec -IntervalSec $ReadinessIntervalSec -Test {
-    Test-PythonAppRunning -FolderPath $WorkerDir
-  }
-  if (-not $workerReady) {
-    Write-LauncherLog 'ERROR: Worker process not detected in time'
-  }
+$workerReady = Wait-Readiness -Label 'Worker (python main.py)' -TimeoutSec $ReadinessPythonSec -IntervalSec $ReadinessIntervalSec -Test {
+  Test-PythonAppRunning -FolderPath $WorkerDir
+}
+if (-not $workerReady) {
+  Write-LauncherLog 'ERROR: Worker process not detected in time'
 }
 
-if ($EnableEncoder) {
-  $encoderReady = Wait-Readiness -Label 'Encoder (python encoder_watchdog.py)' -TimeoutSec $ReadinessPythonSec -IntervalSec $ReadinessIntervalSec -Test {
-    Test-PythonAppRunning -FolderPath $EncoderDir -ScriptName 'encoder_watchdog.py'
-  }
-  if (-not $encoderReady) {
-    Write-LauncherLog 'ERROR: Encoder process not detected in time'
-  }
+$encoderReady = Wait-Readiness -Label 'Encoder (python encoder_watchdog.py)' -TimeoutSec $ReadinessPythonSec -IntervalSec $ReadinessIntervalSec -Test {
+  Test-PythonAppRunning -FolderPath $EncoderDir -ScriptName 'encoder_watchdog.py'
+}
+if (-not $encoderReady) {
+  Write-LauncherLog 'ERROR: Encoder process not detected in time'
 }
 
-if ($EnableObs) {
-  Write-LauncherLog 'Launching OBS...'
-  Start-Process -WorkingDirectory $ObsDir -FilePath $ObsExe -ArgumentList $obsArgs -WindowStyle $obsWindowStyle | Out-Null
-} else {
-  Write-LauncherLog 'Skipping OBS (disabled by REPLAYTROVE_ENABLE_OBS=0)'
-}
+Write-LauncherLog 'Launching OBS...'
+Start-Process -WorkingDirectory $ObsDir -FilePath $ObsExe -ArgumentList $obsArgs -WindowStyle $obsWindowStyle | Out-Null
 
 if ($EnableControlApp) {
   Write-LauncherLog 'Launching control app...'
@@ -1905,38 +1975,33 @@ if ($EnableLauncherUi) {
 }
 
 # Readiness: OBS should be running before scoreboard (replaces fixed long sleep).
-if ($EnableObs) {
-  $obsReady = Wait-Readiness -Label 'OBS (obs64)' -TimeoutSec $ReadinessObsSec -IntervalSec $ReadinessIntervalSec -Test {
-    $null -ne (Get-Process -Name 'obs64' -ErrorAction SilentlyContinue)
-  }
-  if (-not $obsReady) {
-    Write-LauncherLog 'ERROR: OBS did not become ready in time'
-  }
+$obsReady = Wait-Readiness -Label 'OBS (obs64)' -TimeoutSec $ReadinessObsSec -IntervalSec $ReadinessIntervalSec -Test {
+  $null -ne (Get-Process -Name 'obs64' -ErrorAction SilentlyContinue)
+}
+if (-not $obsReady) {
+  Write-LauncherLog 'ERROR: OBS did not become ready in time'
 }
 
-if ($EnableScoreboard) {
-  Write-LauncherLog 'Launching scoreboard...'
-  Start-Process -WorkingDirectory $ScoreboardDir -FilePath $pyScore -ArgumentList @('main.py') -WindowStyle $pyGuiWindowStyle | Out-Null
+Write-LauncherLog 'Launching scoreboard...'
+Start-Process -WorkingDirectory $ScoreboardDir -FilePath $pyScore -ArgumentList @('main.py') -WindowStyle $pyGuiWindowStyle | Out-Null
 
-  $sbReady = Wait-Readiness -Label 'Scoreboard (python main.py)' -TimeoutSec $ReadinessPythonSec -IntervalSec $ReadinessIntervalSec -StabilitySec 3 -Test {
-    Test-PythonAppRunning -FolderPath $ScoreboardDir
-  }
-  if (-not $sbReady) {
-    Write-LauncherLog 'ERROR: Scoreboard process not detected in time'
-  }
-} else {
-  Write-LauncherLog 'Skipping scoreboard (disabled by REPLAYTROVE_ENABLE_SCOREBOARD=0)'
+$sbReady = Wait-Readiness -Label 'Scoreboard (python main.py)' -TimeoutSec $ReadinessPythonSec -IntervalSec $ReadinessIntervalSec -StabilitySec 3 -Test {
+  Test-PythonAppRunning -FolderPath $ScoreboardDir
+}
+if (-not $sbReady) {
+  Write-LauncherLog 'ERROR: Scoreboard process not detected in time'
 }
 
 # Post-launch validation (snapshot after short settle)
 Start-Sleep -Seconds $ReadinessIntervalSec
 
 Write-LauncherLog 'Post-launch validation...'
-$validation = [ordered]@{}
-if ($EnableWorker) { $validation['Worker'] = { Test-PythonAppRunning -FolderPath $WorkerDir } }
-if ($EnableEncoder) { $validation['Encoder'] = { Test-PythonAppRunning -FolderPath $EncoderDir -ScriptName 'encoder_watchdog.py' } }
-if ($EnableScoreboard) { $validation['Scoreboard'] = { Test-PythonAppRunning -FolderPath $ScoreboardDir } }
-if ($EnableObs) { $validation['OBS'] = { $null -ne (Get-Process -Name 'obs64' -ErrorAction SilentlyContinue) } }
+$validation = [ordered]@{
+  'Worker'      = { Test-PythonAppRunning -FolderPath $WorkerDir }
+  'Encoder'     = { Test-PythonAppRunning -FolderPath $EncoderDir -ScriptName 'encoder_watchdog.py' }
+  'Scoreboard'  = { Test-PythonAppRunning -FolderPath $ScoreboardDir }
+  'OBS'         = { $null -ne (Get-Process -Name 'obs64' -ErrorAction SilentlyContinue) }
+}
 if ($EnableControlApp) { $validation['ControlApp'] = { $null -ne (Get-Process -Name $ControlAppProcessName -ErrorAction SilentlyContinue) } }
 
 $allOk = $true
@@ -1980,16 +2045,17 @@ if ($EnableCleaner -and $CleanerOwnerMode -eq 'launcher') {
 
 if (-not $allOk) {
   Write-LauncherLog 'SUPERVISOR: one or more validations failed.'
+  if ($script:OwnerLeaseClaimed) {
+    Release-OwnerLease -Reason 'validation_failed'
+  }
   Wait-LauncherAck 'Validation failed; press Enter to exit'
   exit 2
 }
 
 Write-LauncherLog 'Post-launch validation passed; UI focus/minimize...'
-if ($EnableScoreboard) {
-  Invoke-ScoreboardFocus -MaxAttempts $FocusMaxAttempts -RetryMs $FocusRetryMs `
-    -Reason 'post-validation UI focus' -Title $ScoreboardWindowTitle -ScoreboardFolderPath $ScoreboardDir `
-    -StatusJsonPath $ScoreboardStatusJson -StaleSec $ScoreboardStatusStaleSec -AllowRecovery $ScoreboardFocusRecovery | Out-Null
-}
+Invoke-ScoreboardFocus -MaxAttempts $FocusMaxAttempts -RetryMs $FocusRetryMs `
+  -Reason 'post-validation UI focus' -Title $ScoreboardWindowTitle -ScoreboardFolderPath $ScoreboardDir `
+  -StatusJsonPath $ScoreboardStatusJson -StaleSec $ScoreboardStatusStaleSec -AllowRecovery $ScoreboardFocusRecovery | Out-Null
 if ($EnableControlApp) {
   Invoke-ControlAppMinimizeIfNeeded -ProcessName $ControlAppProcessName -MaxAttempts $FocusMaxAttempts -RetryMs $FocusRetryMs | Out-Null
 }
@@ -2002,10 +2068,13 @@ if (-not $SupervisionEnabled) {
   exit 0
 }
 
-Write-LauncherLog "SUPERVISION OWNER LEASE: path=$SupervisionOwnerLeasePath timeout_sec=$OwnerLeaseStaleSec"
-if (-not (Try-ClaimOwnerLease)) {
-  Wait-LauncherAck 'Another active launcher supervisor owner was detected; press Enter to exit'
-  exit 4
+if ($SupervisionEnabled) {
+  if (-not $script:OwnerLeaseClaimed) {
+    Write-LauncherLog 'SUPERVISION OWNER LEASE ERROR: pre-bootstrap claim missing; refusing supervision loop.'
+    Wait-LauncherAck 'Launcher lease state invalid; press Enter to exit'
+    exit 4
+  }
+  Write-LauncherLog ("SUPERVISION: entering keepalive loop (lease path={0} timeout_sec={1} owner_id={2})." -f $SupervisionOwnerLeasePath, $OwnerLeaseStaleSec, $script:OwnerLeaseId)
 }
 
 Initialize-ScoreboardStatusWatchState
@@ -2020,7 +2089,9 @@ $supervisionComponents = Get-SupervisionComponents
 $supervisionStateMap = New-SupervisionStateMap -Components $supervisionComponents
 $script:DesiredStateMap = New-DesiredStateMap -Components $supervisionComponents
 if ($null -eq $script:DesiredStateMap) { $script:DesiredStateMap = @{} }
+$script:OperatorHoldMap = New-OperatorHoldMap
 Write-LauncherLog ("SUPERVISION: phase-1 keepalive active components=" + (($supervisionComponents | ForEach-Object { $_.Name }) -join ','))
+Write-LauncherLog ("SUPERVISION: scoreboard auto-restart from health checks={0} (set REPLAYTROVE_SUPERVISION_AUTO_RESTART_SCOREBOARD=0 to keep scoreboard off until manual start)" -f $SupervisionAutoRestartScoreboard)
 Write-LauncherLog "SUPERVISION DESIRED_STATE SNAPSHOT: path=$SupervisionDesiredStatePath"
 Merge-SupervisionDesiredStateFromSnapshot -DesiredStateMap $script:DesiredStateMap
 $rehydrated = (Get-ManagedDesiredStateComponentNames | ForEach-Object { "{0}={1}" -f $_, (Get-DesiredState -DesiredStateMap $script:DesiredStateMap -ComponentName $_) }) -join ', '

@@ -174,14 +174,20 @@ class Screensaver:
             )
         )
 
+    def _hold_ms(self) -> int:
+        """Minimum hold between slides so misconfiguration cannot strobe the display."""
+        return max(2000, int(self._settings.slideshow_interval_ms))
+
     def _show_next_image(self) -> None:
         if not self._active:
             return
+        # Cancel stray fade/slide timers (e.g. duplicate after() chains) before scheduling fresh work.
+        self._jobs.cancel_all()
 
         paths = self.get_slideshow_images()
         if not paths:
             self._jobs.schedule(
-                self._settings.slideshow_interval_ms,
+                self._hold_ms(),
                 self._show_next_image,
                 name="screensaver_retry_empty",
             )
@@ -206,7 +212,7 @@ class Screensaver:
         except Exception:
             _LOG.exception("Screensaver: error loading %s", selected)
             self._jobs.schedule(
-                self._settings.slideshow_interval_ms,
+                self._hold_ms(),
                 self._show_next_image,
                 name="screensaver_retry_after_error",
             )
@@ -271,7 +277,7 @@ class Screensaver:
             return
         self._current_frame = frame
         self._jobs.schedule(
-            self._settings.slideshow_interval_ms,
+            self._hold_ms(),
             self._show_next_image,
             name="screensaver_next_slide",
         )

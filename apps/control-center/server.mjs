@@ -782,6 +782,74 @@ function resolveFfmpegPathForEncoderDiscovery(configDoc) {
   return defaultConfig.obsFfmpegPaths.ffmpegPath;
 }
 
+function resolveThumbnailBucket() {
+  return (
+    process.env.S3_THUMBNAIL_BUCKET?.trim() ||
+    process.env.S3_BUCKET?.trim() ||
+    ""
+  );
+}
+
+async function presignS3GetUrl(key, expiresIn = 3600, bucketOverride = undefined) {
+  const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+  const region = process.env.AWS_REGION;
+  const bucket = (
+    bucketOverride != null && String(bucketOverride).trim() !== ""
+      ? String(bucketOverride).trim()
+      : process.env.S3_BUCKET?.trim() || ""
+  );
+  if (!accessKeyId || !secretAccessKey || !region || !bucket) {
+    throw new Error("missing_aws_env");
+  }
+  const { S3Client, GetObjectCommand } = await import("@aws-sdk/client-s3");
+  const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+  const client = new S3Client({
+    region,
+    credentials: { accessKeyId, secretAccessKey },
+  });
+  const cmd = new GetObjectCommand({ Bucket: bucket, Key: key });
+  return getSignedUrl(client, cmd, { expiresIn });
+}
+
+async function fetchRecentClipsFromSupabase(limit) {
+  const baseUrl = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_KEY;
+  const table = process.env.SUPABASE_CLIPS_TABLE || "clips";
+  const clubId = process.env.CLUB_ID;
+  if (!baseUrl?.trim() || !key?.trim()) {
+    return { ok: false, error: "missing_supabase_env", clips: [] };
+  }
+  const n = Math.min(50, Math.max(1, Number(limit) || 12));
+  const u = new URL(`${baseUrl.replace(/\/$/, "")}/rest/v1/${encodeURIComponent(table)}`);
+  u.searchParams.set("select", "id,title,slug,thumbnail_s3_key,recorded_at");
+  u.searchParams.set("order", "recorded_at.desc");
+  u.searchParams.set("limit", String(n));
+  if (clubId?.trim()) {
+    u.searchParams.set("club_id", `eq.${clubId.trim()}`);
+  }
+  const res = await fetch(u.toString(), {
+    headers: {
+      apikey: key,
+      Authorization: `Bearer ${key}`,
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return {
+      ok: false,
+      error: `supabase_http_${res.status}`,
+      detail: text.slice(0, 500),
+      clips: [],
+    };
+  }
+  const data = await res.json();
+  if (!Array.isArray(data)) {
+    return { ok: false, error: "supabase_invalid_shape", clips: [] };
+  }
+  return { ok: true, clips: data };
+}
+
 function getEncoderDevicesFromDiscovery() {
   const loaded = loadDiskConfig();
   const configDoc = loaded.migratedDocument || defaultConfig;
@@ -1019,6 +1087,71 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && pathOnly === "/api/system/status") {
       const status = await buildSystemStatus();
       sendJson(res, 200, { ok: true, status });
+      return;
+    }
+
+    if (req.method === "GET" && pathOnly === "/api/clips/recent") {
+      const urlObj = new URL(req.url || "/", "http://127.0.0.1");
+      const limitRaw = urlObj.searchParams.get("limit");
+      const sup = await fetchRecentClipsFromSupabase(limitRaw);
+      if (!sup.ok) {
+        sendJson(res, 200, {
+          ok: false,
+          error: sup.error,
+          detail: sup.detail ?? null,
+          clips: [],
+          presignFailed: false,
+        });
+        return;
+      }
+      let presignFailed = false;
+      const clipsOut = [];
+      for (const row of sup.clips) {
+        const id = row.id != null ? String(row.id) : "";
+        const thumbKey =
+          typeof row.thumbnail_s3_key === "string" && row.thumbnail_s3_key.trim() !== ""
+            ? row.thumbnail_s3_key.trim()
+            : null;
+        let thumbnailUrl = null;
+        if (thumbKey) {
+          try {
+            thumbnailUrl = await presignS3GetUrl(thumbKey, 3600, resolveThumbnailBucket());
+          } catch (e) {
+            presignFailed = true;
+            console.error(
+              `[control-center-api] presign thumbnail failed key=${thumbKey} err=${e instanceof Error ? e.message : e}`,
+            );
+          }
+        }
+        clipsOut.push({
+          id,
+          title: row.title ?? null,
+          slug: row.slug ?? null,
+          recorded_at: row.recorded_at ?? null,
+          thumbnailS3Key: thumbKey,
+          thumbnailUrl,
+        });
+      }
+      sendJson(res, 200, { ok: true, clips: clipsOut, presignFailed });
+      return;
+    }
+
+    if (req.method === "GET" && pathOnly === "/api/clips/thumbnail-url") {
+      const urlObj = new URL(req.url || "/", "http://127.0.0.1");
+      const s3Key = urlObj.searchParams.get("s3Key") || urlObj.searchParams.get("key");
+      if (!s3Key || !s3Key.trim()) {
+        sendJson(res, 400, { ok: false, message: "Missing s3Key query parameter." });
+        return;
+      }
+      try {
+        const url = await presignS3GetUrl(s3Key.trim(), 3600, resolveThumbnailBucket());
+        sendJson(res, 200, { ok: true, url, expiresIn: 3600 });
+      } catch (e) {
+        sendJson(res, 500, {
+          ok: false,
+          message: e instanceof Error ? e.message : "presign_failed",
+        });
+      }
       return;
     }
 

@@ -1,0 +1,8 @@
+﻿{
+    "id":  "2cef3998a44f48e5b07ba390a2b3af7f",
+    "action":  "stop",
+    "target":  "obs",
+    "created_at":  "2026-04-30T05:58:05.9540197Z",
+    "source":  "launcher_ui.ps1",
+    "source_action":  "stop_selected"
+}

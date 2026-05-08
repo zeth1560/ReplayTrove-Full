@@ -12,6 +12,7 @@ import tkinter as tk
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -19,13 +20,18 @@ from typing import Any
 from PIL import Image, ImageTk
 
 from scoreboard.config.settings import DEFAULT_COMMANDS_ROOT, Settings, load_settings
+from scoreboard.booking_overlay import (
+    BookingInfo,
+    BookingOverlayPoller,
+    fetch_current_booking_via_pickle_planner,
+)
 from scoreboard.config.unified_adapter import load_scoreboard_unified_snapshot
 from scoreboard.obs_health import (
     check_obs_recording_gate,
     probe_obs_video_recorder_ready,
     probe_obs_video_recorder_ready_with_reason,
 )
-from scoreboard.encoder_status_overlay import EncoderStatusOverlay
+from scoreboard.encoder_status_overlay import EncoderStatusOverlay, read_encoder_appliance_ready
 from scoreboard.persistence.score_store import load_scores, save_scores
 from scoreboard.startup_validation import resolve_mpv_executable
 from scoreboard.worker_health import probe_worker_replay_trigger_http
@@ -130,6 +136,27 @@ class RuntimeSafeSettings:
 
 
 class ScoreboardApp:
+    @staticmethod
+    def _debounce_bool_two_sample(
+        st: dict[str, bool | None],
+        raw: bool,
+    ) -> bool:
+        """Stabilize noisy booleans (OBS WS, replay file): need two matching raw samples to flip."""
+        s, l = st["s"], st["l"]
+        if s is None:
+            st["s"] = raw
+            st["l"] = raw
+            return raw
+        if raw == s:
+            st["l"] = raw
+            return s
+        if l is not None and raw == l:
+            st["s"] = raw
+            st["l"] = raw
+            return raw
+        st["l"] = raw
+        return s
+
     def __init__(self, root: tk.Tk, settings: Settings | None = None) -> None:
         self.root = root
         self.logger = _LOG
@@ -198,10 +225,20 @@ class ScoreboardApp:
         self._obs_status_label: tk.Label | None = None
         self._obs_status_poll_after: str | None = None
         self._obs_status_poll_busy = False
+        self._companion_last_instant_replay_ready: bool | None = None
+        self._companion_readiness_poll_job: str | None = None
         self._encoder_recording_poll_job: str | None = None
+        self._booking_overlay_poll_job: str | None = None
+        self._booking_overlay_replay_retry_job: str | None = None
+        self._booking_overlay_hide_job: str | None = None
+        self._booking_overlay_photo: ImageTk.PhotoImage | None = None
+        self._booking_overlay_pending: list[str] = []
+        self._booking_overlay_visible = False
         self._encoder_recording_prev_seq: int | None = None
         self._encoder_sync_believes_recording = False
         self._encoder_recording_idle_streak = 0
+        self._encoder_capture_start_streak = 0
+        self._status_debounce_instant_replay: dict[str, bool | None] = {"s": None, "l": None}
         self.focus_watchdog_ticks_left = 0
         self._focus_watchdog_exhausted_logged = False
         self.last_input_ms = int(time.monotonic() * 1000)
@@ -335,6 +372,13 @@ class ScoreboardApp:
             after_overlay_raise=self._sync_canvas_aux_overlays,
             launcher_screensaver_active=lambda: self.screensaver.is_active(),
         )
+        self._booking_overlay_poller = BookingOverlayPoller(
+            state_path=Path(self.settings.booking_overlay_state_path),
+            poll_interval_sec=self.settings.booking_overlay_poll_interval_sec,
+            logger=self.logger,
+            fetch_current_booking=self._fetch_current_booking,
+            on_show_overlay=self._handle_booking_overlay_request,
+        )
 
         self.draw_scores()
 
@@ -357,6 +401,7 @@ class ScoreboardApp:
         self._publish_launcher_status()
         self._log_startup_readiness()
         self._schedule_companion_startup_readiness_push()
+        self._schedule_booking_overlay_poll(initial=True)
         if self.settings.companion_page_switch_enabled and self.settings.replay_enabled:
             if not self.settings.obs_status_indicator_enabled:
                 self._schedule_companion_readiness_poll()
@@ -458,7 +503,8 @@ class ScoreboardApp:
                 raise TypeError("args must be a JSON object")
             cid = str(args.get("correlation_id") or payload.get("correlation_id") or "-")
             self.logger.info(
-                "command_received id=%s cid=%s action=%s args=%s",
+                "command_received path=%s id=%s cid=%s action=%s args=%s",
+                path,
                 cmd_id,
                 cid,
                 action,
@@ -618,6 +664,17 @@ class ScoreboardApp:
             self.scheduler.schedule(0, self._command_obs_restart, name="command_obs_restart")
         elif action == "dismiss_replay_unavailable":
             self.replay.dismiss_replay_unavailable_overlay()
+        elif action == "show_booking_overlay":
+            overlay_type = str(args.get("overlay_type") or "").strip().lower()
+            outcome = self._handle_booking_overlay_request(overlay_type)
+            if outcome == "shown":
+                self.logger.info("booking_overlay_%s_shown source=command_bus", overlay_type)
+            elif outcome == "queued":
+                self.logger.info("booking_overlay_queued_for_replay overlay_type=%s source=command_bus", overlay_type)
+            else:
+                self.logger.warning("booking_overlay_display_error overlay_type=%s source=command_bus", overlay_type)
+        elif action == "inject_fake_booking":
+            self._inject_fake_booking(args)
         elif action == "reload_scoreboard_safe_settings":
             self._reload_scoreboard_safe_settings(args)
         elif (mpv_action := _resolve_mpv_bus_action(action)) is not None:
@@ -833,12 +890,22 @@ class ScoreboardApp:
             or self.replay.is_transitioning
         )
 
+    def _sync_readiness_debounce(
+        self,
+        *,
+        ir_ready: bool | None = None,
+    ) -> None:
+        """After a forced UI/companion update, keep the next poll from fighting the debouncer."""
+        if ir_ready is not None:
+            self._status_debounce_instant_replay["s"] = ir_ready
+            self._status_debounce_instant_replay["l"] = ir_ready
+
     def _compute_instant_replay_ready(
         self, *, obs_reachable: bool, worker_reachable: bool
     ) -> bool:
         """True when scoreboard-side instant replay should be considered operational.
 
-        By default requires OBS WebSocket reachability (same probe as the status strip).
+        By default requires OBS WebSocket reachability (instant replay / replay buffer).
         When ``companion_readiness_require_obs_websocket`` is false, OBS is skipped for
         this gate (instant replay may still fail until OBS is up).
 
@@ -883,33 +950,42 @@ class ScoreboardApp:
         reason: str = "",
     ) -> None:
         """Drive Companion idle vs locked pages from instant-replay readiness (not replay_active)."""
-        if not self.settings.companion_page_switch_enabled:
-            return
-        # Periodic polls must not yank Companion during replay UI; startup/lockout use force=True.
-        if not force and self._should_defer_companion_readiness_switch():
-            return
-        if (
-            not force
-            and self._companion_last_instant_replay_ready is not None
-            and ready == self._companion_last_instant_replay_ready
-        ):
-            return
-        self._companion_last_instant_replay_ready = ready
-        self.logger.info(
-            "companion_instant_replay_readiness ready=%s reason=%s force=%s",
-            ready,
-            reason or "-",
-            force,
-        )
-        if ready:
-            self._notify_companion_page_switch(
-                trigger="instant_replay_ready",
-                url=self.settings.companion_replay_idle_page_url,
+        try:
+            if not self.settings.companion_page_switch_enabled:
+                return
+            # Never apply idle/locked from readiness while replay UI or lockout is active — including
+            # startup ``force=True`` pushes. Otherwise delayed startup callbacks overwrite ``replay_active``.
+            if self._should_defer_companion_readiness_switch():
+                return
+            prev_ready = getattr(self, "_companion_last_instant_replay_ready", None)
+            if not force and prev_ready is not None and ready == prev_ready:
+                return
+            self._companion_last_instant_replay_ready = ready
+            if force:
+                self._sync_readiness_debounce(ir_ready=ready)
+            self.logger.info(
+                "companion_instant_replay_readiness ready=%s reason=%s force=%s",
+                ready,
+                reason or "-",
+                force,
             )
-        else:
-            self._notify_companion_page_switch(
-                trigger="instant_replay_not_ready",
-                url=self.settings.companion_replay_locked_page_url,
+            if ready:
+                self._notify_companion_page_switch(
+                    trigger="instant_replay_ready",
+                    url=self.settings.companion_replay_idle_page_url,
+                )
+            else:
+                self._notify_companion_page_switch(
+                    trigger="instant_replay_not_ready",
+                    url=self.settings.companion_replay_locked_page_url,
+                )
+        except Exception:
+            # Defensive guard: companion readiness should never crash Tk callbacks.
+            self.logger.exception(
+                "companion_instant_replay_readiness_apply_failed ready=%s reason=%s force=%s",
+                ready,
+                reason or "-",
+                force,
             )
 
     def _schedule_companion_readiness_poll(self) -> None:
@@ -951,7 +1027,14 @@ class ScoreboardApp:
         def _apply() -> None:
             if self._closing:
                 return
-            self._apply_instant_replay_companion_readiness(ready, reason="periodic")
+            ir_smoothed = self._debounce_bool_two_sample(
+                self._status_debounce_instant_replay,
+                ready,
+            )
+            self._apply_instant_replay_companion_readiness(
+                ir_smoothed,
+                reason="periodic",
+            )
             self._schedule_companion_readiness_poll()
 
         self._invoke_on_main_thread(_apply)
@@ -1009,6 +1092,190 @@ class ScoreboardApp:
 
         self._invoke_on_main_thread(_apply)
 
+    def _schedule_booking_overlay_poll(self, *, initial: bool = False) -> None:
+        self.scheduler.cancel(self._booking_overlay_poll_job)
+        self._booking_overlay_poll_job = None
+        if self._closing or not self.settings.booking_overlay_enabled:
+            return
+        delay_ms = 2000 if initial else self._booking_overlay_poller.compute_next_delay_ms()
+        self._booking_overlay_poll_job = self.scheduler.schedule(
+            delay_ms,
+            self._booking_overlay_poll_tick,
+            name="booking_overlay_poll",
+        )
+
+    def _booking_overlay_poll_tick(self) -> None:
+        self._booking_overlay_poll_job = None
+        if self._closing or not self.settings.booking_overlay_enabled:
+            return
+        threading.Thread(
+            target=self._booking_overlay_poll_worker,
+            daemon=True,
+            name="booking-overlay-poll",
+        ).start()
+        self._schedule_booking_overlay_poll()
+
+    def _booking_overlay_poll_worker(self) -> None:
+        booking: BookingInfo | None = None
+        ok = False
+        try:
+            self.logger.info("booking_overlay_poll")
+            booking = self._fetch_current_booking()
+            ok = True
+        except Exception:
+            self.logger.warning("booking_overlay_poll warning=unhandled_exception", exc_info=True)
+        if ok:
+            self._invoke_on_main_thread(
+                lambda: self._booking_overlay_poller.apply_poll_result(booking, source="poll")
+            )
+
+    def _fetch_current_booking(self) -> BookingInfo | None:
+        if self.settings.booking_overlay_dry_run:
+            self.logger.info("booking_overlay_poll dry_run=true")
+            return None
+        return fetch_current_booking_via_pickle_planner(
+            match_url=self.settings.pickle_planner_match_url,
+            api_key=self.settings.pickle_planner_api_key,
+            api_key_header=self.settings.pickle_planner_api_key_header,
+            club_id=self.settings.club_id,
+            court_id=self.settings.court_id,
+            timeout_sec=10.0,
+        )
+
+    def _booking_overlay_replay_blocked(self) -> bool:
+        if not self.settings.booking_overlay_suppress_during_replay:
+            return False
+        return self._replay_command_is_on() or self._replay_buffer_loading.is_sequence_active()
+
+    def _handle_booking_overlay_request(self, overlay_type: str) -> str:
+        if overlay_type not in {"welcome", "goodbye"}:
+            return "error"
+        # Never interrupt replay/mpv visual flow; always defer until replay is clear.
+        if self._replay_command_is_on() or self._replay_buffer_loading.is_sequence_active():
+            self._booking_overlay_pending.append(overlay_type)
+            self._schedule_booking_overlay_replay_retry()
+            return "queued"
+
+        image_path = (
+            self.settings.booking_overlay_welcome_image
+            if overlay_type == "welcome"
+            else self.settings.booking_overlay_goodbye_image
+        )
+        if self.screensaver.is_active():
+            self.screensaver.stop()
+        ok = self.show_image_overlay(
+            image_path,
+            self.settings.booking_overlay_duration_ms,
+        )
+        return "shown" if ok else "error"
+
+    def _schedule_booking_overlay_replay_retry(self) -> None:
+        if self._booking_overlay_replay_retry_job is not None:
+            return
+        self._booking_overlay_replay_retry_job = self.scheduler.schedule(
+            1000,
+            self._booking_overlay_replay_retry_tick,
+            name="booking_overlay_replay_retry",
+        )
+
+    def _booking_overlay_replay_retry_tick(self) -> None:
+        self._booking_overlay_replay_retry_job = None
+        if self._closing or not self._booking_overlay_pending:
+            return
+        if self._booking_overlay_replay_blocked():
+            self._schedule_booking_overlay_replay_retry()
+            return
+        next_overlay = self._booking_overlay_pending.pop(0)
+        _ = self._handle_booking_overlay_request(next_overlay)
+        if self._booking_overlay_pending:
+            self._schedule_booking_overlay_replay_retry()
+
+    def _hide_booking_overlay(self) -> None:
+        self.scheduler.cancel(self._booking_overlay_hide_job)
+        self._booking_overlay_hide_job = None
+        if not self._booking_overlay_visible:
+            return
+        self._finish_hide_booking_overlay()
+
+    def _finish_hide_booking_overlay(self) -> None:
+        self._booking_overlay_visible = False
+        self._refresh_encoder_status_cover_state()
+        self.canvas.itemconfig(self.overlay_canvas, image=self.overlay_photo)
+        self.canvas.tag_raise(self.overlay_canvas)
+        self._sync_canvas_aux_overlays()
+        # Appliance behavior: after welcome/goodbye, return to normal scoreboard mode.
+        if self.screensaver.is_active():
+            self.screensaver.stop()
+        self.draw_scores()
+
+    def show_image_overlay(self, image_path: str, duration_ms: int) -> bool:
+        try:
+            source = Image.open(image_path).convert("RGBA")
+            canvas = Image.new("RGBA", (self.screen_width, self.screen_height), (0, 0, 0, 0))
+            src_w, src_h = source.size
+            if src_w <= 0 or src_h <= 0:
+                raise RuntimeError("invalid booking overlay image dimensions")
+            scale = min(self.screen_width / src_w, self.screen_height / src_h)
+            fit_w = max(1, int(src_w * scale))
+            fit_h = max(1, int(src_h * scale))
+            x = (self.screen_width - fit_w) // 2
+            y = (self.screen_height - fit_h) // 2
+            # If aspect-ratio mismatch creates letterboxing, add subtle dark translucent backdrop.
+            if fit_w != self.screen_width or fit_h != self.screen_height:
+                canvas.alpha_composite(
+                    Image.new("RGBA", (self.screen_width, self.screen_height), (0, 0, 0, 120)),
+                )
+            fitted = source.resize((fit_w, fit_h), Image.Resampling.LANCZOS)
+            canvas.alpha_composite(fitted, dest=(x, y))
+            self._booking_overlay_photo = ImageTk.PhotoImage(canvas)
+            self._booking_overlay_visible = True
+            self._refresh_encoder_status_cover_state()
+            self.canvas.itemconfig(self.overlay_canvas, image=self._booking_overlay_photo)
+            self.canvas.tag_raise(self.overlay_canvas)
+            self._sync_canvas_aux_overlays()
+            self.scheduler.cancel(self._booking_overlay_hide_job)
+            self._booking_overlay_hide_job = self.scheduler.schedule(
+                max(1000, int(duration_ms)),
+                self._hide_booking_overlay,
+                name="booking_overlay_hide",
+            )
+            return True
+        except Exception:
+            self.logger.warning(
+                "booking_overlay_display_error image_path=%s duration_ms=%s",
+                image_path,
+                duration_ms,
+                exc_info=True,
+            )
+            return False
+
+    def _inject_fake_booking(self, args: dict[str, Any]) -> None:
+        booking_id = str(args.get("booking_id") or "").strip() or "fake-booking"
+        start_raw = str(args.get("start_time") or "").strip()
+        end_raw = str(args.get("end_time") or "").strip()
+
+        def _parse(raw: str, fallback_minutes: int) -> datetime:
+            if raw:
+                if raw.endswith("Z"):
+                    raw = raw[:-1] + "+00:00"
+                try:
+                    dt = datetime.fromisoformat(raw)
+                    if dt.tzinfo is None:
+                        return dt.replace(tzinfo=timezone.utc)
+                    return dt.astimezone(timezone.utc)
+                except ValueError:
+                    pass
+            return datetime.now(timezone.utc) + timedelta(minutes=fallback_minutes)
+
+        start_time = _parse(start_raw, -5)
+        end_time = _parse(end_raw, 5)
+        fake = BookingInfo(
+            booking_id=booking_id,
+            start_time=start_time,
+            end_time=end_time if end_time > start_time else (start_time + timedelta(minutes=5)),
+        )
+        self._booking_overlay_poller.set_fake_booking(fake)
+
     def command_poll_loop(self) -> None:
         self._drain_main_thread_callbacks()
         self.check_for_commands()
@@ -1056,8 +1323,14 @@ class ScoreboardApp:
     def increment_right(self, amount: int = 1) -> None:
         self.update_score("b", amount)
 
-    def _publish_launcher_status(self) -> None:
-        """Emit JSON for ReplayTrove launcher (screensaver + process liveness)."""
+    def _publish_launcher_status(self, *, quiet: bool = False) -> None:
+        """Emit JSON for ReplayTrove launcher (screensaver + process liveness).
+
+        The launcher supervision loop treats ``updated_at`` older than
+        ``REPLAYTROVE_SCOREBOARD_STATUS_STALE_SEC`` as a dead scoreboard and **restarts**
+        the process — so this must refresh periodically during normal idle UI, not only on
+        screensaver edges (black screen / no operator input would otherwise starve updates).
+        """
         if not self.settings.launcher_status_enabled:
             return
         path = self.settings.launcher_status_json_path
@@ -1069,7 +1342,8 @@ class ScoreboardApp:
             "updated_at": utc_now_iso(),
         }
         if write_launcher_status_json(path, payload):
-            _LOG.info(
+            log = _LOG.debug if quiet else _LOG.info
+            log(
                 "Launcher status: wrote %s (scoreboard_running=%s screensaver_active=%s)",
                 path,
                 payload["scoreboard_running"],
@@ -1211,7 +1485,7 @@ class ScoreboardApp:
         }
 
     def _on_recording_ui_visibility(self, visible: bool) -> None:
-        self._encoder_status_overlay.set_recording_overlay_covers(visible)
+        self._refresh_encoder_status_cover_state()
         if self._closing:
             return
         event = "recording_overlay_visible" if visible else "recording_overlay_hidden"
@@ -1231,6 +1505,10 @@ class ScoreboardApp:
                     fg_pid,
                     snap,
                 )
+
+    def _refresh_encoder_status_cover_state(self) -> None:
+        covered = self.recording_overlay.is_ui_active() or self._booking_overlay_visible
+        self._encoder_status_overlay.set_recording_overlay_covers(covered)
 
     def _on_screensaver_stopped(self) -> None:
         _LOG.info(
@@ -1282,6 +1560,8 @@ class ScoreboardApp:
                 _LOG.exception("operator_ui_heartbeat failed")
         except Exception:
             _LOG.exception("operator_ui_heartbeat outer failed")
+        if not self._closing:
+            self._publish_launcher_status(quiet=True)
         self._schedule_operator_ui_heartbeat()
 
     def _operator_heartbeat_stuck_checks(self, h: dict[str, Any]) -> None:
@@ -1397,17 +1677,26 @@ class ScoreboardApp:
             self._encoder_recording_idle_streak = 0
 
         if capturing and not was_enc:
-            ro = self.recording_overlay
-            if ro.state != RecordingOverlayState.COUNTING:
-                # Bypass can_start_countdown_from_hotkey(): that blocks ENDED_MESSAGE /
-                # SESSION_END_INFO, but a new encoder session should show the in-progress timer.
-                _LOG.info(
-                    "Recording overlay: countdown started (encoder capture active; %s)",
-                    path,
-                )
-                ro.start_or_restart_countdown()
+            self._encoder_capture_start_streak += 1
+            # Mirror idle-side debouncing: one glitchy "capture started" sample should not
+            # reset the visible session timer.
+            if self._encoder_capture_start_streak >= 2:
+                ro = self.recording_overlay
+                if ro.state != RecordingOverlayState.COUNTING:
+                    # Bypass can_start_countdown_from_hotkey(): that blocks ENDED_MESSAGE /
+                    # SESSION_END_INFO, but a new encoder session should show the in-progress timer.
+                    _LOG.info(
+                        "Recording overlay: countdown started (encoder capture active; %s)",
+                        path,
+                    )
+                    ro.start_or_restart_countdown()
+                self._encoder_sync_believes_recording = True
+                self._encoder_capture_start_streak = 0
+        elif capturing and was_enc:
+            self._encoder_capture_start_streak = 0
             self._encoder_sync_believes_recording = True
         elif not capturing and was_enc:
+            self._encoder_capture_start_streak = 0
             self._encoder_recording_idle_streak += 1
             # Require two consecutive idle samples so a single stale/glitched JSON read
             # does not flash-dismiss the overlay while ffmpeg is still starting.
@@ -1421,6 +1710,7 @@ class ScoreboardApp:
                 self._encoder_recording_idle_streak = 0
         else:
             self._encoder_recording_idle_streak = 0
+            self._encoder_capture_start_streak = 0
             self._encoder_sync_believes_recording = capturing
 
         self._schedule_encoder_recording_poll()
@@ -1461,11 +1751,11 @@ class ScoreboardApp:
         try:
             win.attributes("-topmost", True)
         except tk.TclError:
-            _LOG.debug("obs status: topmost unsupported", exc_info=True)
+            _LOG.debug("encoder status strip: topmost unsupported", exc_info=True)
         try:
             win.transient(self.root)
         except tk.TclError:
-            _LOG.debug("obs status: transient failed", exc_info=True)
+            _LOG.debug("encoder status strip: transient failed", exc_info=True)
         win.configure(bg="#0d0d0d", highlightthickness=0, cursor="none")
 
         fz = max(11, min(18, int(self.screen_height * 0.026)))
@@ -1478,7 +1768,7 @@ class ScoreboardApp:
         inner.pack(fill="both", expand=True)
         lbl = tk.Label(
             inner,
-            text="VIDEO RECORDER UNAVAILABLE",
+            text="ENCODER UNAVAILABLE",
             font=("Segoe UI", fz, "bold"),
             fg="#ffecec",
             bg="#3d1818",
@@ -1502,7 +1792,7 @@ class ScoreboardApp:
         self._obs_status_poll_after = self.scheduler.schedule(
             300,
             self._obs_status_poll_tick,
-            name="obs_status_poll_initial",
+            name="encoder_strip_poll_initial",
         )
 
     def _apply_obs_status_ready(self, ready: bool) -> None:
@@ -1512,39 +1802,61 @@ class ScoreboardApp:
             bg = "#163a24"
             fg = "#e8ffee"
             hi = "#2d5a3d"
-            text = "VIDEO RECORDER READY"
+            text = "ENCODER READY"
         else:
             bg = "#3d1818"
             fg = "#ffecec"
             hi = "#5a2d2d"
-            text = "VIDEO RECORDER UNAVAILABLE"
+            text = "ENCODER UNAVAILABLE"
         self._obs_status_inner.configure(bg=bg, highlightbackground=hi)
         self._obs_status_label.configure(text=text, bg=bg, fg=fg)
 
     def _obs_status_poll_worker(self) -> None:
         try:
+            encoder_ok = read_encoder_appliance_ready(self.settings)
+        except Exception:
+            _LOG.debug("Encoder strip poll failed", exc_info=True)
+            encoder_ok = False
+        try:
             obs_ok = probe_obs_video_recorder_ready(self.settings)
         except Exception:
-            _LOG.debug("OBS status poll failed", exc_info=True)
+            _LOG.debug("OBS probe failed (companion instant-replay readiness)", exc_info=True)
             obs_ok = False
         if self.settings.companion_page_switch_enabled and self.settings.replay_enabled:
             worker_ok = self._worker_http_health_ok()
         else:
             worker_ok = True
+        enc = encoder_ok
         o = obs_ok
         w = worker_ok
-        self._invoke_on_main_thread(lambda: self._obs_status_poll_done(o, w))
+        self._invoke_on_main_thread(
+            lambda: self._obs_status_poll_done(enc, o, w),
+        )
 
-    def _obs_status_poll_done(self, obs_ready: bool, worker_reachable: bool) -> None:
+    def _obs_status_poll_done(
+        self,
+        encoder_ready: bool,
+        obs_ready: bool,
+        worker_reachable: bool,
+    ) -> None:
         self._obs_status_poll_busy = False
+        # Encoder readiness follows encoder_state.json directly (retries in reader). Debouncing
+        # here delayed ENCODER READY for several poll intervals after a single false sample.
         if self._obs_status_win is not None:
-            self._apply_obs_status_ready(obs_ready)
+            self._apply_obs_status_ready(encoder_ready)
         if self.settings.companion_page_switch_enabled and self.settings.replay_enabled:
-            ir = self._compute_instant_replay_ready(
+            ir_raw = self._compute_instant_replay_ready(
                 obs_reachable=obs_ready,
                 worker_reachable=worker_reachable,
             )
-            self._apply_instant_replay_companion_readiness(ir, reason="obs_status_poll")
+            ir_smoothed = self._debounce_bool_two_sample(
+                self._status_debounce_instant_replay,
+                ir_raw,
+            )
+            self._apply_instant_replay_companion_readiness(
+                ir_smoothed,
+                reason="encoder_strip_poll",
+            )
         if self._obs_status_win is None:
             return
         self._schedule_obs_status_poll_after()
@@ -1558,7 +1870,7 @@ class ScoreboardApp:
         self._obs_status_poll_after = self.scheduler.schedule(
             ms,
             self._obs_status_poll_tick,
-            name="obs_status_poll_tick",
+            name="encoder_strip_poll_tick",
         )
 
     def _obs_status_poll_tick(self) -> None:
@@ -1738,10 +2050,8 @@ class ScoreboardApp:
             if not self.recording_overlay.can_start_countdown_from_hotkey():
                 return
             self.recording_overlay.start_or_restart_countdown()
-            self._apply_obs_status_ready(True)
             return
         _LOG.warning("Recording overlay not started: %s", msg)
-        self._apply_obs_status_ready(False)
         if not self.settings.recording_obs_health_fail_closed:
             if not self.recording_overlay.can_start_countdown_from_hotkey():
                 return
@@ -2113,6 +2423,12 @@ class ScoreboardApp:
         self._encoder_recording_poll_job = None
         self.scheduler.cancel(self._companion_readiness_poll_job)
         self._companion_readiness_poll_job = None
+        self.scheduler.cancel(self._booking_overlay_poll_job)
+        self._booking_overlay_poll_job = None
+        self.scheduler.cancel(self._booking_overlay_replay_retry_job)
+        self._booking_overlay_replay_retry_job = None
+        self.scheduler.cancel(self._booking_overlay_hide_job)
+        self._booking_overlay_hide_job = None
 
         self.screensaver.teardown()
         self._encoder_status_overlay.teardown()
@@ -2122,6 +2438,9 @@ class ScoreboardApp:
         self.scheduler.cancel(self._idle_check_job)
         self._idle_check_job = None
         self.recording_overlay.teardown()
+        self._booking_overlay_pending.clear()
+        self._booking_overlay_photo = None
+        self._booking_overlay_visible = False
         self.scheduler.cancel(self._heartbeat_job)
         self._heartbeat_job = None
         self.scheduler.cancel(self._operator_ui_heartbeat_job)
@@ -2344,6 +2663,7 @@ class ScoreboardApp:
         """After replay lockout animation: idle if systems are go, else locked."""
         if not self.settings.companion_page_switch_enabled:
             return
+        self._sync_readiness_debounce(ir_ready=ready)
         self._companion_last_instant_replay_ready = ready
         if ready:
             self._notify_companion_page_switch(

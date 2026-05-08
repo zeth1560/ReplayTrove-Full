@@ -1,0 +1,8 @@
+﻿{
+    "id":  "cc84ffca591f49c6a2f66d6eed6bf8ec",
+    "action":  "restart",
+    "target":  "scoreboard",
+    "created_at":  "2026-05-08T07:02:59.0121353Z",
+    "source":  "launcher_ui.ps1",
+    "source_action":  "restart"
+}

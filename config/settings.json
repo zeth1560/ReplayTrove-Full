@@ -73,7 +73,14 @@
     "obsWebsocketPassword": "MonkeyButt",
     "obsStatusIndicatorEnabled": true,
     "obsStatusPollIntervalMs": 4000,
-    "obsStatusRequireMainOutputIdle": false
+    "obsStatusRequireMainOutputIdle": false,
+    "bookingOverlayEnabled": true,
+    "bookingOverlayDurationMs": 30000,
+    "bookingOverlayPollIntervalSec": 1800,
+    "bookingOverlaySuppressDuringReplay": true,
+    "bookingOverlayWelcomeImage": "C:\\ReplayTrove\\graphics\\startsession.png",
+    "bookingOverlayGoodbyeImage": "C:\\ReplayTrove\\graphics\\ENDsession.png",
+    "bookingOverlayStatePath": "state\\booking_overlay_state.json"
   },
   "launcher": {
     "workerDir": "C:\\ReplayTrove\\worker",
@@ -81,11 +88,7 @@
     "encoderDir": "C:\\ReplayTrove\\encoder",
     "cleanerScript": "C:\\ReplayTrove\\cleaner\\cleaner-bee.ps1",
     "obsDir": "C:\\Program Files\\obs-studio\\bin\\64bit",
-    "enableWorker": true,
-    "enableEncoder": true,
-    "enableScoreboard": true,
     "enableCleaner": true,
-    "enableObs": true,
     "enableControlApp": true,
     "enableLauncherUi": true,
     "launcherUiBat": "C:\\ReplayTrove\\launcher\\launcher_ui.bat",
@@ -109,6 +112,7 @@
     "supervisionMaxRestartsPerWindow": 6,
     "supervisionWindowSec": 300,
     "supervisionBaseBackoffSec": 5,
+    "supervisionAutoRestartScoreboard": true,
     "pauseOnError": true,
     "debugMode": false
   },
@@ -131,6 +135,8 @@
   },
   "picklePlanner": {
     "enabled": true,
-    "baseUrl": "https://example.com"
+    "baseUrl": "https://example.com",
+    "matchUrl": "https://example.com/bookings/match",
+    "apiKeyHeader": "x-api-key"
   }
 }

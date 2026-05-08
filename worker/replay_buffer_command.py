@@ -1,12 +1,15 @@
 """
 Replay-buffer command path (isolated from long-recording ingest).
 
-Handles OBS ``replay_*.mkv`` files under ``LONG_CLIPS_FOLDER`` only: discover, stabilize,
-remux with ffmpeg (stream copy) into a ``*.copying.mp4`` temp under ``clips_incoming``, then copy via a
-same-directory temp file and atomic replace into ``INSTANTREPLAY.mkv``, atomically place the remuxed
-MP4 in ``clips_incoming`` using the source basename with the replay prefix removed and extension
-``.mp4`` (e.g. ``replay_ 2026-04-13T15-06-42.mkv`` → ``2026-04-13T15-06-42.mp4``), verify both, then
-remove the long_clips source (or move it to ``FAILED_FOLDER`` if remux never succeeds).
+Handles OBS ``replay_*.mkv`` files under ``LONG_CLIPS_FOLDER`` only: discover, stabilize, then
+**promote scoreboard playback first** — copy the stable Matroska to a temp and atomically replace
+``INSTANTREPLAY.mkv`` (fast path for instant replay on the scoreboard).
+
+**After** that, remux with ffmpeg (stream copy) into a ``*.copying.mp4`` temp under ``clips_incoming``
+and atomically place the MP4 for the normal ingest pipeline (e.g.
+``replay_ 2026-04-13T15-06-42.mkv`` → ``2026-04-13T15-06-42.mp4``). If remux fails but the scoreboard
+file is already updated, the worker falls back to copying the same MKV into ``clips_incoming`` so
+upload/DB work can still run without moving the long_clips source to ``FAILED_FOLDER``.
 
 Long-clips ingest skips the same filename prefix so replay-buffer clips are not promoted as
 long recordings (see :mod:`ingest`).
@@ -32,7 +35,6 @@ from ingest import incoming_clip_local_basename
 from processor import (
     is_copying_temp_clip,
     is_file_locked,
-    move_with_retries,
     remux_to_mp4_with_retries,
     should_ignore_file,
     unique_destination,
@@ -417,58 +419,6 @@ def _incoming_remux_temp_path(final_mp4: Path) -> Path:
     return final_mp4.parent / f"{final_mp4.stem}.{secrets.token_hex(6)}.copying.mp4"
 
 
-def _replay_remux_failed_move_source(
-    settings: Settings,
-    src_resolved: Path,
-    detected_at: str,
-    remux_err: str | None,
-) -> ProcessLatestReplayResult:
-    try:
-        failed_dest = unique_destination(settings.failed_folder, src_resolved.name)
-        move_with_retries(
-            src_resolved,
-            failed_dest,
-            retries=settings.move_retries,
-            delay_seconds=settings.move_retry_delay_seconds,
-        )
-        logger.warning(
-            "replay-buffer: moved long_clips replay to failed after remux exhaustion",
-            extra={
-                "structured": {
-                    "from": str(src_resolved),
-                    "to": str(failed_dest),
-                }
-            },
-        )
-    except Exception as exc:
-        logger.exception(
-            "replay-buffer: remux failed and could not move source to failed folder",
-            extra={"structured": {"source": str(src_resolved)}},
-        )
-        return ProcessLatestReplayResult(
-            success=False,
-            selected_source_path=str(src_resolved),
-            incoming_path=None,
-            detected_at=detected_at,
-            stability_confirmed=True,
-            failure_reason="replay_buffer_remux_failed_move_to_failed_failed",
-            scoreboard_replay_path=None,
-            processing_error=str(exc)[:500],
-            source_deleted=False,
-        )
-    return ProcessLatestReplayResult(
-        success=False,
-        selected_source_path=str(src_resolved),
-        incoming_path=None,
-        detected_at=detected_at,
-        stability_confirmed=True,
-        failure_reason="replay_buffer_remux_failed",
-        scoreboard_replay_path=None,
-        processing_error=remux_err,
-        source_deleted=False,
-    )
-
-
 def _atomic_replace_scoreboard_temp(
     temp_path: Path,
     final_path: Path,
@@ -508,6 +458,94 @@ def _atomic_replace_scoreboard_temp(
     return True, None
 
 
+def _promote_incoming_mkv_fallback(
+    src_resolved: Path,
+    incoming_dir: Path,
+    incoming_dest_mp4: Path,
+    detected_at: str,
+    scoreboard_dest: Path,
+    *,
+    log_reason: str,
+) -> tuple[Path | None, ProcessLatestReplayResult | None]:
+    """
+    After ``INSTANTREPLAY.mkv`` is already updated: place ``src_resolved`` into ``clips_incoming``
+    as ``.mkv`` so ingest can run without re-reading long_clips. Returns ``(path, None)`` or
+    ``(None, error_result)``.
+    """
+    incoming_mkv = incoming_dest_mp4.with_suffix(".mkv")
+    if incoming_mkv.exists():
+        incoming_mkv = unique_destination(incoming_dir, incoming_mkv.name)
+    mkv_temp = incoming_mkv.parent / f"{incoming_mkv.stem}.{secrets.token_hex(6)}.tmp"
+    _unlink_ignore_missing(mkv_temp)
+    logger.warning(
+        "replay-buffer: incoming MP4 remux unavailable; MKV fallback for ingest (%s)",
+        log_reason,
+        extra={
+            "structured": {
+                "source": str(src_resolved),
+                "incoming_mkv": str(incoming_mkv),
+                "reason": log_reason,
+            }
+        },
+    )
+    try:
+        shutil.copy2(src_resolved, mkv_temp)
+    except OSError as exc:
+        logger.exception(
+            "replay-buffer: MKV fallback copy to incoming temp failed",
+            extra={"structured": {"source": str(src_resolved)}},
+        )
+        _unlink_ignore_missing(mkv_temp)
+        return None, ProcessLatestReplayResult(
+            success=False,
+            selected_source_path=str(src_resolved),
+            incoming_path=None,
+            detected_at=detected_at,
+            stability_confirmed=True,
+            failure_reason="incoming_mkv_fallback_copy_failed",
+            scoreboard_replay_path=str(scoreboard_dest),
+            processing_error=str(exc)[:500],
+            source_deleted=False,
+        )
+    ok_mv, reason_mv, _ = _verify_nonempty_video(mkv_temp, role="incoming_mkv_fallback_temp")
+    if not ok_mv:
+        logger.error(
+            "replay-buffer: MKV fallback temp verification failed",
+            extra={"structured": {"reason": reason_mv, "path": str(mkv_temp)}},
+        )
+        _unlink_ignore_missing(mkv_temp)
+        return None, ProcessLatestReplayResult(
+            success=False,
+            selected_source_path=str(src_resolved),
+            incoming_path=None,
+            detected_at=detected_at,
+            stability_confirmed=True,
+            failure_reason=reason_mv or "incoming_mkv_fallback_verify_failed",
+            scoreboard_replay_path=str(scoreboard_dest),
+            source_deleted=False,
+        )
+    try:
+        os.replace(mkv_temp, incoming_mkv)
+    except OSError as exc:
+        logger.exception(
+            "replay-buffer: MKV fallback atomic place in incoming failed",
+            extra={"structured": {"incoming": str(incoming_mkv)}},
+        )
+        _unlink_ignore_missing(mkv_temp)
+        return None, ProcessLatestReplayResult(
+            success=False,
+            selected_source_path=str(src_resolved),
+            incoming_path=None,
+            detected_at=detected_at,
+            stability_confirmed=True,
+            failure_reason="incoming_mkv_fallback_replace_failed",
+            scoreboard_replay_path=str(scoreboard_dest),
+            processing_error=str(exc)[:500],
+            source_deleted=False,
+        )
+    return incoming_mkv, None
+
+
 def _replay_buffer_dual_copy_and_delete_source(
     source: Path,
     settings: Settings,
@@ -516,15 +554,14 @@ def _replay_buffer_dual_copy_and_delete_source(
     filename_prefix: str,
 ) -> ProcessLatestReplayResult:
     """
-    Replay-buffer only: remux stable ``source`` (Matroska) to an incoming ``*.copying.mp4`` temp,
-    copy ``source`` to a scoreboard temp and atomically replace ``INSTANTREPLAY.mkv``, atomically
-    place the remuxed MP4 in ``clips_incoming``, verify, then delete ``source``.
+    Replay-buffer only: **scoreboard first** — copy stable ``source`` (Matroska) to a temp and
+    atomically replace ``INSTANTREPLAY.mkv``. Then remux to MP4 for ``clips_incoming`` (slow path).
 
-    If remux never produces a valid MP4 after configured retries, the long_clips ``source`` is moved
-    to ``FAILED_FOLDER`` (scoreboard is not updated). If the scoreboard update fails after a good
-    remux temp exists, ``source`` is left in long_clips and the temp remux file is removed.
+    If remux fails after the scoreboard file is live, falls back to placing the same MKV in incoming
+    so the long_clips source is not moved to ``FAILED_FOLDER`` and the kiosk replay is not rolled back.
 
-    Incoming basename = ``source`` name with ``filename_prefix`` removed (see :func:`_replay_incoming_basename`).
+    Incoming basename for the preferred MP4 path = ``source`` name with ``filename_prefix`` removed
+    (see :func:`_replay_incoming_basename`).
     """
     src_resolved = source.resolve(strict=False)
     scoreboard_dest, cfg_err = _scoreboard_replay_destination(settings)
@@ -547,51 +584,17 @@ def _replay_buffer_dual_copy_and_delete_source(
     if incoming_dest.exists():
         incoming_dest = unique_destination(incoming_dir, incoming_name)
 
-    incoming_remux_temp = _incoming_remux_temp_path(incoming_dest)
-    _unlink_ignore_missing(incoming_remux_temp)
-
-    logger.info(
-        "replay-buffer: remux to incoming temp (stream copy to mp4)",
-        extra={
-            "structured": {
-                "source": str(src_resolved),
-                "temp": str(incoming_remux_temp),
-                "final_incoming": str(incoming_dest),
-            }
-        },
-    )
-    ok_remux, remux_err = remux_to_mp4_with_retries(
-        settings,
-        src_resolved,
-        incoming_remux_temp,
-        log_context="replay_buffer_incoming",
-    )
-    if not ok_remux:
-        logger.error(
-            "replay-buffer: remux exhausted; moving long_clips source to failed when possible",
-            extra={"structured": {"source": str(src_resolved)}},
-        )
-        return _replay_remux_failed_move_source(settings, src_resolved, detected_at, remux_err)
-
-    ok_rmx, reason_rmx, _ = _verify_nonempty_video(incoming_remux_temp, role="incoming_remux_temp")
-    if not ok_rmx:
-        logger.error(
-            "replay-buffer: remux temp verification failed; moving source to failed",
-            extra={"structured": {"reason": reason_rmx, "path": str(incoming_remux_temp)}},
-        )
-        _unlink_ignore_missing(incoming_remux_temp)
-        return _replay_remux_failed_move_source(settings, src_resolved, detected_at, reason_rmx)
-
     scoreboard_dest.parent.mkdir(parents=True, exist_ok=True)
     scoreboard_temp = _scoreboard_write_temp_path(scoreboard_dest)
 
     logger.info(
-        "replay-buffer: copying to scoreboard temp (no direct write to INSTANTREPLAY.mkv)",
+        "replay-buffer: scoreboard-first — copy long_clips MKV to temp for atomic INSTANTREPLAY.mkv",
         extra={
             "structured": {
                 "source": str(src_resolved),
                 "scoreboard_temp": str(scoreboard_temp),
                 "scoreboard_final": str(scoreboard_dest),
+                "planned_incoming_mp4": str(incoming_dest),
             }
         },
     )
@@ -603,7 +606,6 @@ def _replay_buffer_dual_copy_and_delete_source(
             extra={"structured": {"source": str(src_resolved)}},
         )
         _unlink_ignore_missing(scoreboard_temp)
-        _unlink_ignore_missing(incoming_remux_temp)
         return ProcessLatestReplayResult(
             success=False,
             selected_source_path=str(src_resolved),
@@ -623,7 +625,6 @@ def _replay_buffer_dual_copy_and_delete_source(
             extra={"structured": {"reason": reason_sb, "path": str(scoreboard_temp)}},
         )
         _unlink_ignore_missing(scoreboard_temp)
-        _unlink_ignore_missing(incoming_remux_temp)
         return ProcessLatestReplayResult(
             success=False,
             selected_source_path=str(src_resolved),
@@ -637,7 +638,6 @@ def _replay_buffer_dual_copy_and_delete_source(
 
     ok_ar, ar_err = _atomic_replace_scoreboard_temp(scoreboard_temp, scoreboard_dest)
     if not ok_ar:
-        _unlink_ignore_missing(incoming_remux_temp)
         return ProcessLatestReplayResult(
             success=False,
             selected_source_path=str(src_resolved),
@@ -650,51 +650,107 @@ def _replay_buffer_dual_copy_and_delete_source(
             source_deleted=False,
         )
 
+    incoming_remux_temp = _incoming_remux_temp_path(incoming_dest)
+    _unlink_ignore_missing(incoming_remux_temp)
+
     logger.info(
-        "replay-buffer: placing remuxed mp4 in incoming",
+        "replay-buffer: INSTANTREPLAY.mkv updated — remux to incoming temp (stream copy to mp4)",
         extra={
             "structured": {
-                "incoming_temp": str(incoming_remux_temp),
-                "incoming_dest": str(incoming_dest),
+                "source": str(src_resolved),
+                "temp": str(incoming_remux_temp),
+                "final_incoming": str(incoming_dest),
             }
         },
     )
-    try:
-        os.replace(incoming_remux_temp, incoming_dest)
-    except OSError as exc:
-        logger.exception(
-            "replay-buffer: could not place remuxed file in incoming "
-            "(scoreboard INSTANTREPLAY.mkv already replaced)",
-            extra={
-                "structured": {
-                    "incoming_temp": str(incoming_remux_temp),
-                    "incoming_dest": str(incoming_dest),
-                }
-            },
-        )
-        _unlink_ignore_missing(incoming_remux_temp)
-        return ProcessLatestReplayResult(
-            success=False,
-            selected_source_path=str(src_resolved),
-            incoming_path=None,
-            detected_at=detected_at,
-            stability_confirmed=True,
-            failure_reason="incoming_remux_final_replace_failed",
-            scoreboard_replay_path=str(scoreboard_dest),
-            processing_error=str(exc)[:500],
-            source_deleted=False,
-        )
+    ok_remux, remux_err = remux_to_mp4_with_retries(
+        settings,
+        src_resolved,
+        incoming_remux_temp,
+        log_context="replay_buffer_incoming",
+    )
 
-    ok_in, reason_in, _ = _verify_nonempty_video(incoming_dest, role="incoming")
+    incoming_work: Path
+    if not ok_remux:
+        _unlink_ignore_missing(incoming_remux_temp)
+        incoming_work, err_res = _promote_incoming_mkv_fallback(
+            src_resolved,
+            incoming_dir,
+            incoming_dest,
+            detected_at,
+            scoreboard_dest,
+            log_reason=f"remux_exhausted: {remux_err or 'unknown'}",
+        )
+        if err_res is not None:
+            return err_res
+        assert incoming_work is not None
+    else:
+        ok_rmx, reason_rmx, _ = _verify_nonempty_video(incoming_remux_temp, role="incoming_remux_temp")
+        if not ok_rmx:
+            logger.error(
+                "replay-buffer: remux temp verification failed after scoreboard promotion",
+                extra={"structured": {"reason": reason_rmx, "path": str(incoming_remux_temp)}},
+            )
+            _unlink_ignore_missing(incoming_remux_temp)
+            incoming_work, err_res = _promote_incoming_mkv_fallback(
+                src_resolved,
+                incoming_dir,
+                incoming_dest,
+                detected_at,
+                scoreboard_dest,
+                log_reason=f"remux_temp_verify_failed: {reason_rmx or 'unknown'}",
+            )
+            if err_res is not None:
+                return err_res
+            assert incoming_work is not None
+        else:
+            logger.info(
+                "replay-buffer: placing remuxed mp4 in incoming",
+                extra={
+                    "structured": {
+                        "incoming_temp": str(incoming_remux_temp),
+                        "incoming_dest": str(incoming_dest),
+                    }
+                },
+            )
+            try:
+                os.replace(incoming_remux_temp, incoming_dest)
+            except OSError as exc:
+                logger.exception(
+                    "replay-buffer: could not place remuxed file in incoming "
+                    "(scoreboard INSTANTREPLAY.mkv already replaced); trying MKV fallback",
+                    extra={
+                        "structured": {
+                            "incoming_temp": str(incoming_remux_temp),
+                            "incoming_dest": str(incoming_dest),
+                        }
+                    },
+                )
+                _unlink_ignore_missing(incoming_remux_temp)
+                incoming_work, err_res = _promote_incoming_mkv_fallback(
+                    src_resolved,
+                    incoming_dir,
+                    incoming_dest,
+                    detected_at,
+                    scoreboard_dest,
+                    log_reason=f"incoming_mp4_replace_failed: {exc}",
+                )
+                if err_res is not None:
+                    return err_res
+                assert incoming_work is not None
+            else:
+                incoming_work = incoming_dest
+
+    ok_in, reason_in, _ = _verify_nonempty_video(incoming_work, role="incoming")
     if not ok_in:
         logger.error(
             "replay-buffer: incoming verification failed; source file not deleted",
-            extra={"structured": {"reason": reason_in, "path": str(incoming_dest)}},
+            extra={"structured": {"reason": reason_in, "path": str(incoming_work)}},
         )
         return ProcessLatestReplayResult(
             success=False,
             selected_source_path=str(src_resolved),
-            incoming_path=str(incoming_dest.resolve(strict=False)),
+            incoming_path=str(incoming_work.resolve(strict=False)),
             detected_at=detected_at,
             stability_confirmed=True,
             failure_reason=reason_in or "incoming_verify_failed",
@@ -703,7 +759,7 @@ def _replay_buffer_dual_copy_and_delete_source(
         )
 
     ok_sb2, _, _ = _verify_nonempty_video(scoreboard_dest, role="scoreboard_final")
-    ok_in2, _, _ = _verify_nonempty_video(incoming_dest, role="incoming_final")
+    ok_in2, _, _ = _verify_nonempty_video(incoming_work, role="incoming_final")
     if not (ok_sb2 and ok_in2):
         logger.error(
             "replay-buffer: post-verify check failed; source file not deleted",
@@ -717,7 +773,7 @@ def _replay_buffer_dual_copy_and_delete_source(
         return ProcessLatestReplayResult(
             success=False,
             selected_source_path=str(src_resolved),
-            incoming_path=str(incoming_dest.resolve(strict=False)),
+            incoming_path=str(incoming_work.resolve(strict=False)),
             detected_at=detected_at,
             stability_confirmed=True,
             failure_reason="destination_post_verify_failed",
@@ -730,12 +786,12 @@ def _replay_buffer_dual_copy_and_delete_source(
         src_resolved.unlink()
         deleted = True
         logger.info(
-            "replay-buffer: removed source replay from long_clips after successful remux/promotion",
+            "replay-buffer: removed source replay from long_clips after successful promotion",
             extra={"structured": {"source": str(src_resolved)}},
         )
     except OSError as exc:
         logger.warning(
-            "replay-buffer: remux/promotion succeeded but could not delete long_clips source",
+            "replay-buffer: promotion succeeded but could not delete long_clips source",
             exc_info=True,
             extra={
                 "structured": {
@@ -745,7 +801,7 @@ def _replay_buffer_dual_copy_and_delete_source(
             },
         )
 
-    incoming_final = incoming_dest.resolve(strict=False)
+    incoming_final = incoming_work.resolve(strict=False)
     return ProcessLatestReplayResult(
         success=True,
         selected_source_path=str(src_resolved),
@@ -769,8 +825,8 @@ def run_process_latest_replay(
 ) -> ProcessLatestReplayResult:
     """
     Replay-buffer path only: poll ``settings.long_clips_folder`` for ``{prefix}*.mkv``,
-    select the newest acceptable file, stabilize, then remux + scoreboard copy + verified delete via
-    :func:`_replay_buffer_dual_copy_and_delete_source`.
+    select the newest acceptable file, stabilize, then scoreboard-first promotion + incoming
+    (remux or MKV fallback) + verified delete via :func:`_replay_buffer_dual_copy_and_delete_source`.
 
     Does not call ``process_clip``; the caller runs the pipeline on ``incoming_path``.
     """

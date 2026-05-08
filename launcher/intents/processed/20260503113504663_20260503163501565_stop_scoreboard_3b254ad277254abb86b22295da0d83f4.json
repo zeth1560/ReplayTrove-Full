@@ -1,0 +1,8 @@
+﻿{
+    "id":  "3b254ad277254abb86b22295da0d83f4",
+    "action":  "stop",
+    "target":  "scoreboard",
+    "created_at":  "2026-05-03T16:35:01.5655793Z",
+    "source":  "launcher_ui.ps1",
+    "source_action":  "stop"
+}

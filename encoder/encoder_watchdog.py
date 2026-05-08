@@ -83,6 +83,55 @@ def _state_path() -> Path:
     ).resolve()
 
 
+def _purge_encoder_pending_commands(log: logging.Logger) -> None:
+    """Move stale JSON from commands/encoder/pending before the first operator spawn.
+
+    Stream Deck / Companion commands can accumulate while the encoder is down; draining
+    them after a long outage causes bogus start/stop bursts. Default: enabled; set
+    ENCODER_WATCHDOG_PURGE_PENDING_COMMANDS=0 to keep pending files.
+    """
+    raw = os.environ.get("ENCODER_WATCHDOG_PURGE_PENDING_COMMANDS", "1").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        log.info(
+            "Encoder pending command purge skipped "
+            "(ENCODER_WATCHDOG_PURGE_PENDING_COMMANDS=%s).",
+            os.environ.get("ENCODER_WATCHDOG_PURGE_PENDING_COMMANDS", ""),
+        )
+        return
+    pending = _REPO_ROOT / "commands" / "encoder" / "pending"
+    if not pending.is_dir():
+        return
+    dest = _REPO_ROOT / "commands" / "encoder" / "purged_on_startup"
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.warning("Encoder pending purge: cannot create %s: %s", dest, exc)
+        return
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    moved = 0
+    for p in sorted(pending.iterdir()):
+        if not p.is_file() or p.suffix.lower() != ".json":
+            continue
+        target = dest / f"{stamp}__{p.name}"
+        n = 1
+        while target.exists():
+            target = dest / f"{stamp}__{n}__{p.name}"
+            n += 1
+        try:
+            p.replace(target)
+            moved += 1
+        except OSError as exc:
+            log.warning("Encoder pending purge: could not move %s: %s", p, exc)
+    if moved:
+        log.info(
+            "Purged %s encoder command(s) from backlog (%s -> %s, batch=%s).",
+            moved,
+            pending,
+            dest,
+            stamp,
+        )
+
+
 def _operator_argv() -> list[str]:
     override = os.environ.get("WATCHDOG_OPERATOR_SCRIPT", "").strip()
     if override:
@@ -149,6 +198,37 @@ def _stale_from_data(data: dict[str, Any] | None, stale_after: float) -> tuple[b
     if age > stale_after:
         return True, f"stale_state age={age:.1f}s"
     return False, ""
+
+
+def _state_age_seconds(data: dict[str, Any] | None) -> float | None:
+    if not data:
+        return None
+    ts = _parse_updated_at(data.get("updated_at"))
+    if ts is None:
+        return None
+    return (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds()
+
+
+def _log_restart_event(
+    log: logging.Logger,
+    *,
+    reason: str,
+    child: subprocess.Popen | None,
+    state_path: Path,
+    data: dict[str, Any] | None,
+    expected_mode: str,
+) -> None:
+    process_alive = bool(child is not None and child.poll() is None)
+    state_exists = state_path.is_file()
+    state_age = _state_age_seconds(data)
+    log.warning(
+        "watchdog_restart_operator reason=%s process_alive=%s state_exists=%s state_age_seconds=%s expected_mode=%s",
+        reason,
+        process_alive,
+        state_exists,
+        f"{state_age:.1f}" if state_age is not None else "n/a",
+        expected_mode or "unknown",
+    )
 
 
 def _read_state_with_retries(
@@ -218,6 +298,42 @@ def _recording_guard_suppresses_kill(
     return False
 
 
+def _should_restart_for_stale_state(
+    *,
+    data: dict[str, Any] | None,
+    stale_reason: str,
+    stale_or_missing_streak: int,
+    stale_consecutive_limit: int,
+    was_recording_at_last_success: bool,
+    last_success_mono: float,
+    now_mono: float,
+    short_protect_sec: float,
+    max_blackout_sec: float,
+    log: logging.Logger,
+) -> tuple[bool, str]:
+    """Decide whether stale/missing state should trigger restart.
+
+    Recording protection is evaluated before streak gating so active/recent recording
+    cannot be overridden by stale/missing consecutive-failure thresholds.
+    """
+    if _recording_guard_suppresses_kill(
+        data=data,
+        was_recording_at_last_success=was_recording_at_last_success,
+        last_success_mono=last_success_mono,
+        now_mono=now_mono,
+        short_protect_sec=short_protect_sec,
+        max_blackout_sec=max_blackout_sec,
+        log=log,
+        reason=stale_reason,
+    ):
+        return False, "recording_guard"
+    if _long_recording_active(data):
+        return False, "recording_active"
+    if stale_or_missing_streak < stale_consecutive_limit:
+        return False, "below_stale_consecutive_limit"
+    return True, "restart"
+
+
 def _fetch_encoder_ping(
     host: str, port: int, timeout: float, log: logging.Logger
 ) -> dict[str, Any] | None:
@@ -279,6 +395,7 @@ def main() -> None:
     read_retry_delay = _opt_float("WATCHDOG_STATE_READ_RETRY_DELAY_SECONDS", 0.05)
     rec_short_protect = _opt_float("WATCHDOG_RECORDING_SHORT_PROTECT_SECONDS", 120.0)
     rec_blackout_max = _opt_float("WATCHDOG_RECORDING_BLACKOUT_MAX_SECONDS", 900.0)
+    stale_consecutive_limit = max(1, _opt_int("WATCHDOG_STALE_CONSECUTIVE_LIMIT", 3))
     ping_host = (
         os.environ.get("ENCODER_WATCHDOG_HTTP_BIND", "127.0.0.1").strip() or "127.0.0.1"
     )
@@ -313,12 +430,14 @@ def main() -> None:
         ping_host,
         ping_port if ping_port > 0 else "(off)",
     )
+    _purge_encoder_pending_commands(log)
 
     restart_times: deque[float] = deque()
     child: subprocess.Popen | None = None
     spawn_mono: float = 0.0
     last_state_success_mono: float = 0.0
     was_recording_at_last_success: bool = False
+    stale_or_missing_streak: int = 0
 
     def bump_restart_counter() -> None:
         restart_times.append(time.monotonic())
@@ -343,6 +462,14 @@ def main() -> None:
                     if code == 0 and not restart_on_zero:
                         log.info("Operator exited normally; watchdog stopping.")
                         return
+                    # operator_long_only: singleton mutex held by another process
+                    if code == 86:
+                        log.error(
+                            "Operator exited with code 86 (duplicate instance: another "
+                            "long-only operator is already running). Watchdog exiting — "
+                            "do not start multiple encoder stacks or watchdogs."
+                        )
+                        return
                     log.error("Operator exited (code=%s); restarting.", code)
                     bump_restart_counter()
 
@@ -351,6 +478,7 @@ def main() -> None:
                 spawn_mono = time.monotonic()
                 last_state_success_mono = 0.0
                 was_recording_at_last_success = False
+                stale_or_missing_streak = 0
                 time.sleep(min(poll, 1.0))
                 continue
 
@@ -361,9 +489,16 @@ def main() -> None:
                     ping = _fetch_encoder_ping(ping_host, ping_port, ping_timeout, log)
                     if ping is not None and ping.get("schema_version") == 1:
                         if ping.get("restart_recommended") is True:
+                            _log_restart_event(
+                                log,
+                                reason="ping_restart_recommended",
+                                child=child,
+                                state_path=state_path,
+                                data=None,
+                                expected_mode=str(ping.get("app_state") or "unknown"),
+                            )
                             log.warning(
-                                "Restarting operator: encoder ping restart_recommended "
-                                "(run_id=%s note=%s)",
+                                "Restarting operator details source=encoder_ping run_id=%s note=%s",
                                 ping.get("run_id"),
                                 ping.get("operator_note"),
                             )
@@ -392,39 +527,61 @@ def main() -> None:
                 if data is not None:
                     last_state_success_mono = time.monotonic()
                     was_recording_at_last_success = _long_recording_active(data)
+                    stale_or_missing_streak = 0
 
                 bad_stale, stale_reason = _stale_from_data(data, stale_after)
                 if bad_stale:
-                    if _recording_guard_suppresses_kill(
+                    stale_or_missing_streak += 1
+                    should_restart, decision = _should_restart_for_stale_state(
                         data=data,
+                        stale_reason=stale_reason,
+                        stale_or_missing_streak=stale_or_missing_streak,
+                        stale_consecutive_limit=stale_consecutive_limit,
                         was_recording_at_last_success=was_recording_at_last_success,
                         last_success_mono=last_state_success_mono,
                         now_mono=time.monotonic(),
                         short_protect_sec=rec_short_protect,
                         max_blackout_sec=rec_blackout_max,
                         log=log,
-                        reason=stale_reason,
-                    ):
+                    )
+                    if not should_restart and decision == "recording_guard":
                         time.sleep(poll)
                         continue
-                    if _long_recording_active(data):
+                    expected_mode = str(
+                        (data or {}).get("state")
+                        or (ping or {}).get("app_state")
+                        or "unknown"
+                    )
+                    if not should_restart and decision == "below_stale_consecutive_limit":
                         log.warning(
-                            "Operator state stale (%s) but long recording active; "
-                            "skipping restart (policy: stop only via operator or max duration).",
+                            "Deferring operator restart for transient state issue "
+                            "(reason=%s streak=%s/%s expected_mode=%s).",
                             stale_reason,
+                            stale_or_missing_streak,
+                            stale_consecutive_limit,
+                            expected_mode,
                         )
                         time.sleep(poll)
                         continue
-                    log.warning("Restarting operator: %s", stale_reason)
+                    _log_restart_event(
+                        log,
+                        reason=stale_reason,
+                        child=child,
+                        state_path=state_path,
+                        data=data,
+                        expected_mode=expected_mode,
+                    )
                     _kill_process_tree(child.pid, log)
                     try:
                         child.wait(timeout=20)
                     except subprocess.TimeoutExpired:
                         log.warning("Child wait timeout after taskkill.")
                     child = None
+                    stale_or_missing_streak = 0
                     bump_restart_counter()
                     time.sleep(1.0)
                     continue
+                stale_or_missing_streak = 0
 
                 if data:
                     need, reason = _state_requires_restart(data)
@@ -449,9 +606,16 @@ def main() -> None:
                             )
                             time.sleep(poll)
                             continue
+                        _log_restart_event(
+                            log,
+                            reason=reason,
+                            child=child,
+                            state_path=state_path,
+                            data=data,
+                            expected_mode=str(data.get("state") or "unknown"),
+                        )
                         log.warning(
-                            "Restarting operator: %s (state=%s last_error=%s)",
-                            reason,
+                            "Restarting operator details state=%s last_error=%s",
                             data.get("state"),
                             data.get("last_error"),
                         )

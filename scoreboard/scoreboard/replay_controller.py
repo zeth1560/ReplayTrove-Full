@@ -90,6 +90,8 @@ class ReplayController:
         self._video_host_visible = False
         self._replay_video_process: subprocess.Popen | None = None
         self._mpv_input_conf_path: str | None = None
+        # True between scheduling embedded mpv and _spawn_mpv_embedded (replay_video_active still False).
+        self._mpv_embed_spawn_scheduled = False
 
         self._start_job: str | None = None
         self._embed_spawn_job: str | None = None
@@ -194,6 +196,7 @@ class ReplayController:
         self._start_job = None
         self._scheduler.cancel(self._embed_spawn_job)
         self._embed_spawn_job = None
+        self._mpv_embed_spawn_scheduled = False
 
     def cancel_replay_video_poll(self) -> None:
         self._scheduler.cancel(self._poll_job)
@@ -355,8 +358,8 @@ class ReplayController:
         path = (self._settings.launcher_status_json_path or "").strip()
         if not path:
             return
-        # Must match real screensaver state: hardcoding False desyncs the launcher watch loop
-        # (it keys off screensaver edges) and can stop/restart the encoder stack incorrectly.
+        # Must match real screensaver state: hardcoding False desyncs launcher_status.json and
+        # the supervisor's screensaver edge handling (e.g. recovery when leaving slideshow).
         screensaver_active = False
         if self._launcher_screensaver_active is not None:
             try:
@@ -843,11 +846,16 @@ class ReplayController:
     def _start_replay_video(self) -> None:
         self._start_job = None
 
-        if not self._showing_replay or self._replay_video_active:
+        if (
+            not self._showing_replay
+            or self._replay_video_active
+            or self._mpv_embed_spawn_scheduled
+        ):
             _LOG.info(
-                "Replay: launch skipped (invalid state showing=%s active=%s)",
+                "Replay: launch skipped (invalid state showing=%s active=%s embed_scheduled=%s)",
                 self._showing_replay,
                 self._replay_video_active,
+                self._mpv_embed_spawn_scheduled,
             )
             return
 
@@ -930,6 +938,7 @@ class ReplayController:
         self.prepare_canvas_for_video_transition()
 
         if self._settings.mpv_embedded:
+            self._mpv_embed_spawn_scheduled = True
             self.show_video_host()
             self._root.update_idletasks()
             self._embed_spawn_job = self._scheduler.schedule(
@@ -1079,6 +1088,7 @@ class ReplayController:
         input_conf_path: str,
     ) -> None:
         self._embed_spawn_job = None
+        self._mpv_embed_spawn_scheduled = False
         if not self._showing_replay or self._replay_video_active:
             _LOG.info(
                 "Replay: mpv embedded spawn skipped (invalid state showing=%s active=%s)",

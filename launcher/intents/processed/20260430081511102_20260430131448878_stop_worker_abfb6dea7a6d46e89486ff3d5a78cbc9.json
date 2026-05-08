@@ -1,0 +1,8 @@
+﻿{
+    "id":  "abfb6dea7a6d46e89486ff3d5a78cbc9",
+    "action":  "stop",
+    "target":  "worker",
+    "created_at":  "2026-04-30T13:14:48.8781008Z",
+    "source":  "launcher_ui.ps1",
+    "source_action":  "stop_selected"
+}

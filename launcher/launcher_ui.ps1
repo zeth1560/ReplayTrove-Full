@@ -323,18 +323,14 @@ function Test-UiActionBlockedByOwnership {
     default { 'restart' }
   }
   if ([string]::IsNullOrWhiteSpace($target)) {
-    $msg = "Launcher supervision is active. Direct UI action '$Action' for '$appName' is blocked to avoid dual-owner conflicts."
-    [void][System.Windows.Forms.MessageBox]::Show($msg, 'ReplayTrove Launcher', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
     Write-UiLog "UI action blocked by supervision owner: action=$Action app=$appName reason=$($owner.Reason)"
     return $true
   }
   try {
     $intentPath = Submit-LauncherIntent -Action $intentAction -Target $target -SourceAction $Action
-    $msg = "Launcher supervision is active. A '$intentAction' request was sent to launcher supervisor for '$appName'.`n`nIntent: $intentPath"
-    [void][System.Windows.Forms.MessageBox]::Show($msg, 'ReplayTrove Launcher', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
     Write-UiLog "UI action rerouted to intent bridge: action=$Action intent_action=$intentAction app=$appName target=$target intent=$intentPath reason=$($owner.Reason)"
   } catch {
-    $msg = "Launcher supervision is active, but request failed for '$appName'.`n`nError: $($_.Exception.Message)"
+    $msg = "Request failed for '$appName'.`n`nError: $($_.Exception.Message)"
     [void][System.Windows.Forms.MessageBox]::Show($msg, 'ReplayTrove Launcher', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     Write-UiLog "UI intent submission failed: action=$Action app=$appName target=$target error=$($_.Exception.Message)"
   }
@@ -365,14 +361,12 @@ function Stop-LauncherUi {
 $apps = @(
   @{
     Name = 'Worker'
-    Env = 'REPLAYTROVE_ENABLE_WORKER'
     IsRunning = { Test-PythonScriptRunning -FolderPath 'C:\ReplayTrove\worker' -ScriptName 'main.py' }
     Start = { Start-PythonScript -FolderPath 'C:\ReplayTrove\worker' -ScriptName 'main.py' }
     Stop = { Stop-ProcessList -Processes (Get-MatchingPythonProcesses -FolderPath 'C:\ReplayTrove\worker' -ScriptName 'main.py') }
   }
   @{
     Name = 'Encoder'
-    Env = 'REPLAYTROVE_ENABLE_ENCODER'
     IsRunning = { Test-EncoderStackRunning -FolderPath $EncoderDir }
     Start = { Start-PythonScript -FolderPath $EncoderDir -ScriptName 'encoder_watchdog.py' }
     Stop = {
@@ -398,7 +392,6 @@ $apps = @(
   }
   @{
     Name = 'OBS'
-    Env = 'REPLAYTROVE_ENABLE_OBS'
     IsRunning = { (Get-ProcessByNameSafe -Name 'obs64').Count -gt 0 }
     Start = {
       if (Test-Path -LiteralPath $ObsSentinel) {
@@ -424,7 +417,6 @@ $apps = @(
   }
   @{
     Name = 'Scoreboard'
-    Env = 'REPLAYTROVE_ENABLE_SCOREBOARD'
     IsRunning = { Test-PythonScriptRunning -FolderPath 'C:\ReplayTrove\scoreboard' -ScriptName 'main.py' }
     Start = { Start-PythonScript -FolderPath 'C:\ReplayTrove\scoreboard' -ScriptName 'main.py' }
     Stop = { Stop-ProcessList -Processes (Get-MatchingPythonProcesses -FolderPath 'C:\ReplayTrove\scoreboard' -ScriptName 'main.py') }
@@ -448,7 +440,7 @@ $form.MaximizeBox = $false
 $title = New-Object System.Windows.Forms.Label
 $title.Location = New-Object System.Drawing.Point(15, 12)
 $title.Size = New-Object System.Drawing.Size(700, 24)
-$title.Text = 'Use checkboxes for supervisor launch, or control selected apps directly below.'
+$title.Text = 'Checkboxes: optional supervisor apps only (cleaner, control app, launcher UI). Worker, Encoder, OBS, and Scoreboard always start with the supervisor — use Start/Stop below for runtime control.'
 $form.Controls.Add($title)
 
 $ownershipLabel = New-Object System.Windows.Forms.Label
@@ -465,6 +457,9 @@ foreach ($app in $apps) {
   $checkbox.Size = New-Object System.Drawing.Size(170, 24)
   $checkbox.Checked = $true
   $checkbox.Text = $app.Name
+  if (-not $app.ContainsKey('Env') -or [string]::IsNullOrWhiteSpace([string]$app.Env)) {
+    $checkbox.Enabled = $false
+  }
   $form.Controls.Add($checkbox)
 
   $status = New-Object System.Windows.Forms.Label
@@ -632,6 +627,7 @@ $launchButton.Add_Click({
     return
   }
   foreach ($row in $rows) {
+    if (-not $row.App.ContainsKey('Env') -or [string]::IsNullOrWhiteSpace([string]$row.App.Env)) { continue }
     $value = if ($row.Check.Checked) { '1' } else { '0' }
     [Environment]::SetEnvironmentVariable($row.App.Env, $value, 'Process')
   }

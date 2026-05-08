@@ -26,6 +26,7 @@ from connectivity import ConnectivityMonitor
 from config import Settings, slug_from_stem
 from database import (
     update_clip_booking_id,
+    update_clip_thumbnail_fields,
     upsert_booking_from_match,
     upsert_clip_record,
 )
@@ -49,6 +50,7 @@ from lifecycle_events import (
     BOOKING_MATCH_RETRY_SCHEDULED,
     BOOKING_MATCH_UNMATCHED,
     CLIP_CLAIMED,
+    CLIP_THUMBNAIL_DB_UPDATED,
     DB_UPSERT_COMPLETED,
     JOB_FINALIZED,
     JOB_RECOVERY_CREATED,
@@ -58,12 +60,15 @@ from lifecycle_events import (
     PREVIEW_UPLOAD_COMPLETED,
     REMOTE_SYNC_DEFERRED,
     STEP_SKIPPED_ON_RESUME,
+    THUMBNAIL_GENERATED,
+    THUMBNAIL_GENERATION_STARTED,
+    THUMBNAIL_UPLOAD_COMPLETED,
     log_worker_event,
 )
 from network_retry import NonRetryableDependencyError, TransientNetworkError
 from paths import normalize_storage_path
 from pickle_planner import get_booking_match_for_clip
-from uploader import S3Uploader
+from uploader import S3Uploader, s3_uploader_from_worker_settings
 
 logger = logging.getLogger(__name__)
 
@@ -766,6 +771,82 @@ def build_s3_keys(settings: Settings, original_name: str, preview_name: str) -> 
     return orig_key, prev_key
 
 
+def build_thumbnail_s3_key(settings: Settings, slug: str) -> str:
+    prefix = settings.s3_thumbnail_prefix.strip("/")
+    name = f"{slug}.jpg"
+    return f"{prefix}/{name}" if prefix else name
+
+
+def thumbnail_seek_seconds(duration: float | None) -> float:
+    """
+    Seek position for a poster frame: ~3s for clips under 30s, ~10s otherwise.
+    Unknown duration defaults to 3 seconds. Clamped to an in-range timestamp.
+    """
+    if duration is None:
+        return 3.0
+    if not math.isfinite(duration) or duration <= 0:
+        return 3.0
+    target = 3.0 if duration < 30.0 else 10.0
+    margin = min(0.5, duration * 0.1)
+    inner = duration - margin
+    if inner <= 0:
+        return 0.0
+    return min(target, inner)
+
+
+def run_ffmpeg_thumbnail(
+    settings: Settings,
+    input_path: Path,
+    output_path: Path,
+    *,
+    seek_seconds: float,
+) -> None:
+    """Extract a single JPEG frame (640px wide) at seek_seconds (best-effort seek)."""
+    ffmpeg_exe = resolve_ffmpeg_path(settings)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        ffmpeg_exe,
+        "-y",
+        "-ss",
+        str(seek_seconds),
+        "-i",
+        str(input_path),
+        "-vf",
+        "scale=640:-1",
+        "-frames:v",
+        "1",
+        "-q:v",
+        "3",
+        str(output_path),
+    ]
+    logger.info(
+        "Running ffmpeg thumbnail extract",
+        extra={
+            "structured": {
+                "cmd": " ".join(cmd),
+                "input": str(input_path),
+                "output": str(output_path),
+                "seek_seconds": seek_seconds,
+            }
+        },
+    )
+    run_kw: dict[str, object] = {
+        "capture_output": True,
+        "text": True,
+        "check": False,
+        "stdin": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        run_kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    proc = subprocess.run(cmd, **run_kw)
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "")[-4000:]
+        stdout = (proc.stdout or "")[-2000:]
+        raise RuntimeError(
+            f"ffmpeg thumbnail failed (code {proc.returncode}). stdout={stdout!r} stderr={stderr!r}"
+        )
+
+
 def resolve_ffmpeg_path(settings: Settings) -> str:
     ffmpeg_path = Path(str(settings.ffmpeg_path))
 
@@ -1168,7 +1249,18 @@ def process_clip(
     long_clip_semaphore: threading.BoundedSemaphore | None = None,
     connectivity: ConnectivityMonitor | None = None,
     on_original_upload_complete: Callable[[], None] | None = None,
+    thumbnail_uploader: S3Uploader | None = None,
 ) -> None:
+    if thumbnail_uploader is None:
+        if settings.s3_thumbnail_bucket == primary_uploader.bucket:
+            thumbnail_uploader = primary_uploader
+        else:
+            thumbnail_uploader = s3_uploader_from_worker_settings(
+                settings,
+                bucket=settings.s3_thumbnail_bucket,
+                label="thumbnail",
+            )
+
     incoming = settings.clips_incoming_folder.resolve(strict=False)
     processing = settings.clips_processing_folder.resolve(strict=False)
 
@@ -2056,6 +2148,138 @@ def process_clip(
                         "job_uuid": job.job_uuid,
                         "clip_identity": idem,
                         "status": job.status,
+                    },
+                )
+
+            clip_row_id = inserted_clip.get("id")
+            clip_row_id_str = str(clip_row_id) if clip_row_id is not None else None
+            if clip_row_id_str and clip_path.is_file() and not _connectivity_offline(connectivity):
+                thumb_staging = (settings.preview_folder / "_thumb_staging").resolve(
+                    strict=False
+                )
+                thumb_local = thumb_staging / f"{slug}.jpg"
+                thumbnail_object_key = build_thumbnail_s3_key(settings, slug)
+                _pj = job_store.get(idem)
+                try:
+                    log_worker_event(
+                        logger,
+                        logging.INFO,
+                        THUMBNAIL_GENERATION_STARTED,
+                        "Thumbnail generation started",
+                        {
+                            "job_uuid": _pj.job_uuid if _pj else None,
+                            "clip_identity": idem,
+                            "clip_id": clip_row_id_str,
+                            "thumbnail_s3_key": thumbnail_object_key,
+                            "path": str(clip_path),
+                        },
+                    )
+                    seek = thumbnail_seek_seconds(duration_seconds)
+                    thumb_staging.mkdir(parents=True, exist_ok=True)
+                    run_ffmpeg_thumbnail(
+                        settings, clip_path, thumb_local, seek_seconds=seek
+                    )
+                    log_worker_event(
+                        logger,
+                        logging.INFO,
+                        THUMBNAIL_GENERATED,
+                        "Thumbnail generated",
+                        {
+                            "job_uuid": _pj.job_uuid if _pj else None,
+                            "clip_identity": idem,
+                            "clip_id": clip_row_id_str,
+                            "thumbnail_s3_key": thumbnail_object_key,
+                            "local_path": str(thumb_local),
+                            "seek_seconds": seek,
+                        },
+                    )
+                    up_thumb = thumbnail_uploader.upload_file(
+                        thumb_local, thumbnail_object_key
+                    )
+                    returned_key = (up_thumb.get("key") or "").strip()
+                    stored_thumbnail_key = returned_key or thumbnail_object_key
+                    if returned_key and returned_key != thumbnail_object_key:
+                        logger.warning(
+                            "S3 thumbnail key differed from upload path (using returned key for DB)",
+                            extra={
+                                "structured": {
+                                    "upload_path": thumbnail_object_key,
+                                    "returned_key": returned_key,
+                                    "clip_id": clip_row_id_str,
+                                }
+                            },
+                        )
+                    thumbnail_created_at = datetime.now(timezone.utc).isoformat()
+                    log_worker_event(
+                        logger,
+                        logging.INFO,
+                        THUMBNAIL_UPLOAD_COMPLETED,
+                        "Thumbnail uploaded to S3",
+                        {
+                            "job_uuid": _pj.job_uuid if _pj else None,
+                            "clip_identity": idem,
+                            "clip_id": clip_row_id_str,
+                            "thumbnail_s3_key": stored_thumbnail_key,
+                            "bucket": up_thumb.get("bucket"),
+                        },
+                    )
+                    updated = update_clip_thumbnail_fields(
+                        supabase,
+                        settings,
+                        clip_id=clip_row_id_str,
+                        thumbnail_s3_key=stored_thumbnail_key,
+                        thumbnail_created_at=thumbnail_created_at,
+                    )
+                    if updated is not None:
+                        log_worker_event(
+                            logger,
+                            logging.INFO,
+                            CLIP_THUMBNAIL_DB_UPDATED,
+                            "Clip row updated with thumbnail fields",
+                            {
+                                "job_uuid": _pj.job_uuid if _pj else None,
+                                "clip_identity": idem,
+                                "clip_id": clip_row_id_str,
+                                "thumbnail_s3_key": stored_thumbnail_key,
+                                "thumbnail_created_at": thumbnail_created_at,
+                            },
+                        )
+                    else:
+                        logger.warning(
+                            "Clip thumbnail DB update did not complete (see prior logs)",
+                            extra={
+                                "structured": {
+                                    "clip_id": clip_row_id_str,
+                                    "thumbnail_s3_key": stored_thumbnail_key,
+                                }
+                            },
+                        )
+                except Exception as thumb_exc:
+                    logger.exception(
+                        "Clip thumbnail pipeline failed (processing continues)",
+                        extra={
+                            "structured": {
+                                "path": str(clip_path),
+                                "slug": slug,
+                                "clip_id": clip_row_id_str,
+                                "thumbnail_s3_key": thumbnail_object_key,
+                                "error": str(thumb_exc)[:500],
+                            }
+                        },
+                    )
+                finally:
+                    try:
+                        thumb_local.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            elif clip_row_id_str and clip_path.is_file() and _connectivity_offline(connectivity):
+                logger.info(
+                    "Thumbnail pipeline skipped (offline)",
+                    extra={
+                        "structured": {
+                            "clip_id": clip_row_id_str,
+                            "clip_identity": idem,
+                        }
                     },
                 )
 

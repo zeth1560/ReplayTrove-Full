@@ -110,8 +110,10 @@ class Settings:
     aws_access_key_id: str
     aws_secret_access_key: str
     s3_bucket: str
+    s3_thumbnail_bucket: str
     s3_original_prefix: str
     s3_preview_prefix: str
+    s3_thumbnail_prefix: str
 
     scott_aws_region: str
     scott_aws_access_key_id: str
@@ -447,9 +449,13 @@ def load_settings(env_file: Path | None = None) -> Settings:
     key_id = _require("AWS_ACCESS_KEY_ID")
     secret = _require("AWS_SECRET_ACCESS_KEY")
     bucket = _require("S3_BUCKET")
+    # Thumbnails default to the same bucket as originals/previews (e.g. S3_BUCKET=replaytrove → s3://replaytrove/thumbnails/…).
+    thumb_bucket_raw = _optional("S3_THUMBNAIL_BUCKET", "").strip()
+    thumb_bucket = thumb_bucket_raw if thumb_bucket_raw else bucket
 
     orig_prefix = _optional("S3_ORIGINAL_PREFIX", "originals").strip("/")
     prev_prefix = _optional("S3_PREVIEW_PREFIX", "previews").strip("/")
+    thumb_prefix = _optional("S3_THUMBNAIL_PREFIX", "thumbnails").strip("/")
 
     scott_aws_region = _optional("SCOTT_AWS_REGION", "us-east-1")
     scott_aws_access_key_id = _require("SCOTT_AWS_ACCESS_KEY_ID")
@@ -1060,8 +1066,10 @@ def load_settings(env_file: Path | None = None) -> Settings:
         aws_access_key_id=key_id,
         aws_secret_access_key=secret,
         s3_bucket=bucket,
+        s3_thumbnail_bucket=thumb_bucket,
         s3_original_prefix=orig_prefix,
         s3_preview_prefix=prev_prefix,
+        s3_thumbnail_prefix=thumb_prefix,
         scott_aws_region=scott_aws_region,
         scott_aws_access_key_id=scott_aws_access_key_id,
         scott_aws_secret_access_key=scott_aws_secret_access_key,

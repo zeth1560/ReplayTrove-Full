@@ -133,6 +133,82 @@ type SystemStatus = {
   };
 };
 
+type ClipCardRow = {
+  id: string;
+  title: string | null;
+  slug: string | null;
+  recorded_at: string | null;
+  thumbnailUrl: string | null;
+  thumbnailS3Key: string | null;
+};
+
+function ClipThumbnailCard({ clip }: { clip: ClipCardRow }) {
+  const [broken, setBroken] = useState(false);
+  const showImg = Boolean(clip.thumbnailUrl) && !broken;
+  const heading = clip.title?.trim() || clip.slug?.trim() || clip.id;
+  return (
+    <div
+      style={{
+        border: "1px solid #ddd",
+        borderRadius: 8,
+        overflow: "hidden",
+        maxWidth: 320,
+        background: "#fff",
+      }}
+    >
+      <div
+        style={{
+          aspectRatio: "16 / 9",
+          background: "#e8eaed",
+          minHeight: 120,
+          position: "relative",
+        }}
+      >
+        {showImg ? (
+          <img
+            src={clip.thumbnailUrl!}
+            alt={heading}
+            style={{
+              width: "100%",
+              height: "100%",
+              objectFit: "cover",
+              display: "block",
+            }}
+            onError={() => setBroken(true)}
+          />
+        ) : (
+          <div
+            style={{
+              height: "100%",
+              minHeight: 120,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#5f6368",
+              fontSize: 13,
+              padding: 12,
+              textAlign: "center",
+            }}
+          >
+            No thumbnail
+          </div>
+        )}
+      </div>
+      <div style={{ padding: 8, fontSize: 12 }}>
+        <div style={{ fontWeight: 600 }}>{heading}</div>
+        {clip.recorded_at ? (
+          <div style={{ color: "#666", marginTop: 4 }}>{clip.recorded_at}</div>
+        ) : null}
+        {clip.thumbnailS3Key ? (
+          <div style={{ color: "#888", marginTop: 4, wordBreak: "break-all", fontSize: 11 }}>
+            {clip.thumbnailS3Key}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 const SECTION_LABELS: Record<SectionKey, string> = {
   schemaVersion: "Schema",
   general: "General",
@@ -777,42 +853,6 @@ const FIELD_META: FieldMeta[] = [
     surfacedInForm: true,
   },
   {
-    key: "launcher.enableWorker",
-    label: "Start Worker from launcher",
-    group: "Launcher Startup",
-    restartRequired: true,
-    hotReloadCandidate: false,
-    advanced: false,
-    dangerous: true,
-    surfacedInForm: true,
-    impact: "Worker app will not start from launcher.",
-    dangerousType: "startup",
-  },
-  {
-    key: "launcher.enableScoreboard",
-    label: "Start Scoreboard from launcher",
-    group: "Launcher Startup",
-    restartRequired: true,
-    hotReloadCandidate: false,
-    advanced: false,
-    dangerous: true,
-    surfacedInForm: true,
-    impact: "Scoreboard app will not start from launcher.",
-    dangerousType: "startup",
-  },
-  {
-    key: "launcher.enableObs",
-    label: "Start OBS from launcher",
-    group: "Launcher Startup",
-    restartRequired: true,
-    hotReloadCandidate: false,
-    advanced: false,
-    dangerous: true,
-    surfacedInForm: true,
-    impact: "OBS process will not start from launcher.",
-    dangerousType: "startup",
-  },
-  {
     key: "launcher.workerDir",
     label: "Launcher worker directory",
     group: "Paths and Storage",
@@ -1073,6 +1113,12 @@ function App() {
     };
   } | null>(null);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
+  const [recentClips, setRecentClips] = useState<{
+    loading: boolean;
+    error: string | null;
+    clips: ClipCardRow[];
+    presignFailed: boolean;
+  } | null>(null);
   const [encoderDiscovery, setEncoderDiscovery] = useState<{
     loading: boolean;
     error: string | null;
@@ -1144,9 +1190,6 @@ function App() {
         "launcher.scoreboardDir",
         "launcher.encoderDir",
         "launcher.obsDir",
-        "launcher.enableWorker",
-        "launcher.enableScoreboard",
-        "launcher.enableObs",
         "launcher.enableControlApp",
         "launcher.controlAppExe",
         "launcher.controlAppProcessName",
@@ -1182,6 +1225,7 @@ function App() {
     void loadFromApi();
     void loadScoreboardReloadStatus();
     void loadSystemStatus();
+    void loadRecentClips();
     const draft = localStorage.getItem(STORAGE_KEY);
     if (draft) {
       setStatus("Loaded disk config. Draft data is available locally.");
@@ -1253,6 +1297,41 @@ function App() {
       setSystemStatus(data.status as SystemStatus);
     } catch {
       setSystemStatus(null);
+    }
+  }
+
+  async function loadRecentClips() {
+    setRecentClips((prev) => ({
+      loading: true,
+      error: null,
+      clips: prev?.clips ?? [],
+      presignFailed: false,
+    }));
+    try {
+      const res = await fetch(`${API_BASE}/api/clips/recent?limit=12`, { cache: "no-store" });
+      const data = await res.json();
+      if (!data?.ok) {
+        setRecentClips({
+          loading: false,
+          error: String(data?.error ?? `HTTP ${res.status}`),
+          clips: [],
+          presignFailed: false,
+        });
+        return;
+      }
+      setRecentClips({
+        loading: false,
+        error: null,
+        clips: Array.isArray(data.clips) ? (data.clips as ClipCardRow[]) : [],
+        presignFailed: Boolean(data.presignFailed),
+      });
+    } catch (e) {
+      setRecentClips({
+        loading: false,
+        error: String(e),
+        clips: [],
+        presignFailed: false,
+      });
     }
   }
 
@@ -2195,17 +2274,10 @@ function App() {
         <div>{fieldLabel(getMeta("launcher.scoreboardDir").label, getMeta("launcher.scoreboardDir").help)}<input placeholder={getMeta("launcher.scoreboardDir").placeholder} value={config.launcher.scoreboardDir} onChange={(e) => updateLauncher("scoreboardDir", e.target.value)} />{renderMeta("launcher.scoreboardDir")}</div>
         <div>{fieldLabel(getMeta("launcher.encoderDir").label, getMeta("launcher.encoderDir").help)}<input placeholder={getMeta("launcher.encoderDir").placeholder} value={config.launcher.encoderDir} onChange={(e) => updateLauncher("encoderDir", e.target.value)} />{renderMeta("launcher.encoderDir")}</div>
         <div>{fieldLabel(getMeta("launcher.obsDir").label, getMeta("launcher.obsDir").help)}<input placeholder={getMeta("launcher.obsDir").placeholder} value={config.launcher.obsDir} onChange={(e) => updateLauncher("obsDir", e.target.value)} />{renderMeta("launcher.obsDir")}</div>
-        {renderCheckbox("launcher.enableWorker", config.launcher.enableWorker, (v) =>
-          updateLauncher("enableWorker", v),
-        )}
-        {renderCheckbox(
-          "launcher.enableScoreboard",
-          config.launcher.enableScoreboard,
-          (v) => updateLauncher("enableScoreboard", v),
-        )}
-        {renderCheckbox("launcher.enableObs", config.launcher.enableObs, (v) =>
-          updateLauncher("enableObs", v),
-        )}
+        <div style={{ gridColumn: "1 / -1", fontSize: 12, color: "#555", marginBottom: 4 }}>
+          Worker, encoder, scoreboard, and OBS always start with the supervisor. Use the Launcher UI to stop or
+          start them after boot; only optional apps below use enable flags for supervisor startup.
+        </div>
         {renderCheckbox(
           "launcher.enableControlApp",
           config.launcher.enableControlApp,
@@ -2465,6 +2537,52 @@ function App() {
               )}
             </div>
           </div>
+        )}
+      </div>
+
+      <div style={{ ...sectionCardStyle }}>
+        <h3 style={{ marginTop: 0 }}>Recent clips</h3>
+        <p style={{ fontSize: 12, color: "#555", marginTop: 0 }}>
+          Loads rows from Supabase (same credentials as the worker). The API presigns{" "}
+          <code style={{ fontSize: 11 }}>thumbnail_s3_key</code> for display. Ensure the Control
+          Center API process has <code style={{ fontSize: 11 }}>SUPABASE_URL</code>,{" "}
+          <code style={{ fontSize: 11 }}>SUPABASE_KEY</code>,{" "}
+          <code style={{ fontSize: 11 }}>AWS_REGION</code>, AWS keys, and{" "}
+          <code style={{ fontSize: 11 }}>S3_BUCKET</code> (thumbnails use the same bucket unless{" "}
+          <code style={{ fontSize: 11 }}>S3_THUMBNAIL_BUCKET</code> is set). Optional:{" "}
+          <code style={{ fontSize: 11 }}>CLUB_ID</code>,{" "}
+          <code style={{ fontSize: 11 }}>SUPABASE_CLIPS_TABLE</code>.
+        </p>
+        <div style={{ marginBottom: 10 }}>
+          <button type="button" onClick={() => void loadRecentClips()} disabled={recentClips?.loading}>
+            Refresh clips
+          </button>
+        </div>
+        {!recentClips ? (
+          <div style={{ color: "#666" }}>Loading clips…</div>
+        ) : recentClips.error ? (
+          <div style={{ color: "#a65b00" }}>Clips unavailable: {recentClips.error}</div>
+        ) : recentClips.clips.length === 0 ? (
+          <div style={{ color: "#666" }}>No clips returned (empty table or RLS filtered).</div>
+        ) : (
+          <>
+            {recentClips.presignFailed ? (
+              <div style={{ color: "#a65b00", fontSize: 12, marginBottom: 8 }}>
+                Some thumbnail URLs could not be presigned (check AWS env on the API process).
+              </div>
+            ) : null}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+                gap: 12,
+              }}
+            >
+              {recentClips.clips.map((c, idx) => (
+                <ClipThumbnailCard key={c.id || c.slug || `clip-${idx}`} clip={c} />
+              ))}
+            </div>
+          </>
         )}
       </div>
 

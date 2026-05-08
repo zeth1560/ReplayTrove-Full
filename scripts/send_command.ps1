@@ -31,6 +31,11 @@ function Write-Fail([string] $Message) {
     exit 1
 }
 
+function Write-Noop([string] $Message) {
+    Write-Host ("command_noop {0}" -f $Message)
+    exit 0
+}
+
 if ([string]::IsNullOrWhiteSpace($Action)) {
     Write-Fail 'Action must not be empty.'
 }
@@ -66,6 +71,100 @@ function Resolve-CommandsRoot {
     return @{ Root = $DefaultRoot; Source = 'default' }
 }
 
+function Resolve-EncoderStatePath {
+    param(
+        [string] $RepoRoot
+    )
+    $envPath = [Environment]::GetEnvironmentVariable('ENCODER_STATE_PATH')
+    if (-not [string]::IsNullOrWhiteSpace($envPath)) {
+        return @{ Path = $envPath.Trim().Trim('"').Trim("'"); Source = 'env' }
+    }
+    $cfgPath = if (-not [string]::IsNullOrWhiteSpace($env:REPLAYTROVE_SETTINGS_FILE)) {
+        $env:REPLAYTROVE_SETTINGS_FILE
+    } else {
+        Join-Path $RepoRoot 'config\settings.json'
+    }
+    if (Test-Path -LiteralPath $cfgPath) {
+        try {
+            $j = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+            $esp = $j.scoreboard.encoderStatePath
+            if ($null -ne $esp -and $esp -is [string] -and -not [string]::IsNullOrWhiteSpace($esp)) {
+                return @{ Path = $esp.Trim().Trim('"').Trim("'"); Source = 'unified' }
+            }
+        } catch {
+            # fall through to default
+        }
+    }
+    return @{ Path = (Join-Path $RepoRoot 'scoreboard\encoder_state.json'); Source = 'default' }
+}
+
+function Get-EncoderCommandGateState {
+    param(
+        [string] $RepoRoot
+    )
+    $resolved = Resolve-EncoderStatePath -RepoRoot $RepoRoot
+    $statePath = $resolved.Path
+    if (-not [System.IO.Path]::IsPathRooted($statePath)) {
+        $scoreboardRelative = Join-Path (Join-Path $RepoRoot 'scoreboard') $statePath
+        if (Test-Path -LiteralPath $scoreboardRelative) {
+            $statePath = $scoreboardRelative
+        } else {
+            $statePath = Join-Path $RepoRoot $statePath
+        }
+    }
+    try {
+        $statePath = [System.IO.Path]::GetFullPath($statePath)
+    } catch {
+        return [pscustomobject]@{
+            Ready = $false
+            Recording = $false
+            Path = $statePath
+            Source = $resolved.Source
+            Reason = 'state_path_invalid'
+        }
+    }
+    if (-not (Test-Path -LiteralPath $statePath)) {
+        return [pscustomobject]@{
+            Ready = $false
+            Recording = $false
+            Path = $statePath
+            Source = $resolved.Source
+            Reason = 'state_file_missing'
+        }
+    }
+    try {
+        $raw = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        return [pscustomobject]@{
+            Ready = $false
+            Recording = $false
+            Path = $statePath
+            Source = $resolved.Source
+            Reason = 'state_file_unreadable'
+        }
+    }
+    $ready = $false
+    if ($null -ne $raw.PSObject.Properties['encoder_ready']) {
+        $ready = [bool]$raw.encoder_ready
+    } elseif ($null -ne $raw.PSObject.Properties['long_recording_available']) {
+        $ready = [bool]$raw.long_recording_available
+    }
+    $recording = $false
+    if ($null -ne $raw.PSObject.Properties['long_recording_active']) {
+        $recording = [bool]$raw.long_recording_active
+    } elseif ($null -ne $raw.PSObject.Properties['state']) {
+        $stateNorm = [string]$raw.state
+        $recording = ($stateNorm.Trim().ToLowerInvariant() -eq 'recording')
+    }
+    return [pscustomobject]@{
+        Ready = $ready
+        Recording = $recording
+        Path = $statePath
+        Source = $resolved.Source
+        Reason = 'ok'
+    }
+}
+
 $resolvedRoot = Resolve-CommandsRoot -RepoRoot $repoRoot -DefaultRoot $defaultCommandsRoot
 $commandRoot = $resolvedRoot.Root
 $commandRootSource = $resolvedRoot.Source
@@ -79,6 +178,22 @@ try {
 }
 
 $pendingDir = Join-Path -Path $commandRoot -ChildPath $Target | Join-Path -ChildPath 'pending'
+
+if ($Target -eq 'encoder') {
+    $actionNorm = $Action.Trim().ToLowerInvariant()
+    if ($actionNorm -in @('start_recording', 'stop_recording')) {
+        $gate = Get-EncoderCommandGateState -RepoRoot $repoRoot
+        if ($actionNorm -eq 'start_recording' -and $gate.Recording) {
+            Write-Noop ("target=encoder action=start_recording reason=already_recording state_reason={0} state_path={1} state_source={2}" -f $gate.Reason, $gate.Path, $gate.Source)
+        }
+        if ($actionNorm -eq 'start_recording' -and -not $gate.Ready) {
+            Write-Noop ("target=encoder action=start_recording reason=encoder_not_ready state_reason={0} state_path={1} state_source={2}" -f $gate.Reason, $gate.Path, $gate.Source)
+        }
+        if ($actionNorm -eq 'stop_recording' -and -not $gate.Recording) {
+            Write-Noop ("target=encoder action=stop_recording reason=not_recording state_reason={0} state_path={1} state_source={2}" -f $gate.Reason, $gate.Path, $gate.Source)
+        }
+    }
+}
 
 try {
     $argsParsed = $ArgsJson | ConvertFrom-Json -ErrorAction Stop

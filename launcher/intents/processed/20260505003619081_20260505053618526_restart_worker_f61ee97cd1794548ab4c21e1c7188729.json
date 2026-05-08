@@ -1,0 +1,8 @@
+﻿{
+    "id":  "f61ee97cd1794548ab4c21e1c7188729",
+    "action":  "restart",
+    "target":  "worker",
+    "created_at":  "2026-05-05T05:36:18.5262654Z",
+    "source":  "launcher_ui.ps1",
+    "source_action":  "restart"
+}

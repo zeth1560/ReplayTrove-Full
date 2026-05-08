@@ -184,6 +184,78 @@ def insert_clip_record(
     )
 
 
+def update_clip_thumbnail_fields(
+    client: Client,
+    settings: Settings,
+    *,
+    clip_id: str,
+    thumbnail_s3_key: str,
+    thumbnail_created_at: str,
+) -> dict[str, Any] | None:
+    """
+    Patch ``thumbnail_s3_key`` (object key only, not a URL) and ``thumbnail_created_at`` on an existing clip row.
+    """
+    logger.info(
+        "Supabase clip thumbnail update",
+        extra={
+            "structured": {
+                "table": settings.supabase_clips_table,
+                "clip_id": clip_id,
+                "thumbnail_s3_key": thumbnail_s3_key,
+            }
+        },
+    )
+
+    payload: dict[str, Any] = {
+        "thumbnail_s3_key": thumbnail_s3_key,
+        "thumbnail_created_at": thumbnail_created_at,
+    }
+
+    def _do_update() -> dict[str, Any]:
+        response = (
+            client.table(settings.supabase_clips_table)
+            .update(payload)
+            .eq("id", clip_id)
+            .execute()
+        )
+        data = getattr(response, "data", None)
+        if data and isinstance(data, list) and len(data) > 0:
+            return data[0]
+        return {"id": clip_id, **payload}
+
+    try:
+        return call_with_network_retry(
+            _do_update,
+            operation="supabase_clip_thumbnail_update",
+            base_seconds=settings.network_retry_base_seconds,
+            max_seconds=settings.network_retry_max_seconds,
+            jitter_frac=settings.network_retry_jitter_fraction,
+            max_rounds=settings.network_retry_rounds_per_tick,
+            on_retry=logging_retry_hook("Supabase clip thumbnail update"),
+        )
+    except APIError as e:
+        err_l = str(e).lower()
+        col_missing = (
+            ("thumbnail_s3_key" in err_l or "thumbnail_created_at" in err_l)
+            and (
+                "does not exist" in err_l
+                or "not found" in err_l
+                or "unknown" in err_l
+            )
+        )
+        if col_missing:
+            logger.warning(
+                "Supabase clip thumbnail update skipped (columns missing)",
+                extra={"structured": {"table": settings.supabase_clips_table, "clip_id": clip_id}},
+            )
+            return None
+        logger.warning(
+            "Supabase clip thumbnail update failed",
+            extra={"structured": {"clip_id": clip_id, "error": str(e)[:500]}},
+        )
+        return None
+
+
 def update_clip_booking_id(
     client: Client,
     settings: Settings,

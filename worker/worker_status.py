@@ -21,6 +21,34 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Windows often returns transient Access denied on atomic replace when another
+# reader (AV, explorer, second worker) briefly locks the destination.
+_REPLACE_MAX_ATTEMPTS = 8
+_REPLACE_INITIAL_DELAY_SEC = 0.02
+_REPLACE_MAX_DELAY_SEC = 0.2
+
+
+def _replace_with_retry(src: Path, dst: Path) -> None:
+    """``Path.replace`` with short exponential backoff on permission-style errors."""
+    delay = _REPLACE_INITIAL_DELAY_SEC
+    last_err: OSError | None = None
+    for attempt in range(_REPLACE_MAX_ATTEMPTS):
+        try:
+            src.replace(dst)
+            return
+        except OSError as exc:
+            winerr = getattr(exc, "winerror", None)
+            if isinstance(exc, PermissionError) or winerr == 5 or exc.errno == 13:
+                last_err = exc
+            else:
+                raise
+            if attempt + 1 >= _REPLACE_MAX_ATTEMPTS:
+                break
+            time.sleep(delay)
+            delay = min(delay * 2.0, _REPLACE_MAX_DELAY_SEC)
+    assert last_err is not None
+    raise last_err
+
 
 class WorkerStatusReporter:
     """Thread-safe counters and periodic JSON snapshot (default ``C:\\ReplayTrove\\status.json``)."""
@@ -81,7 +109,7 @@ class WorkerStatusReporter:
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.write(data)
-                Path(tmp).replace(self._path)
+                _replace_with_retry(Path(tmp), self._path)
             except Exception:
                 try:
                     Path(tmp).unlink(missing_ok=True)

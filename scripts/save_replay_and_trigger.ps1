@@ -10,6 +10,15 @@
     3) Wait for success response (timeout/fail closed).
     4) Only on success, send replay_on to scoreboard command bus.
 
+  Worker /replay expedited stage (what this script waits on):
+    The worker selects the newest matching replay under long_clips, stabilizes it, then
+    atomically replaces C:\ReplayTrove\INSTANTREPLAY.mkv first (raw MKV copy — fastest).
+    Remux to an incoming MP4 for the normal upload pipeline runs only after that.
+
+  After that, the running worker may still upload / DB-process the incoming clip in the
+  background on the same job queue as normal ingest. That work must not delay step 3 or 4;
+  the embedded worker is configured so /replay returns as soon as INSTANTREPLAY.mkv is ready.
+
   Existing scripts are intentionally left in place for compatibility; this script is the
   authoritative path for reliable replay triggering.
 
@@ -106,6 +115,30 @@ function Load-UnifiedSettings {
         $snapshot.Error = $_.Exception.Message
     }
     return $snapshot
+}
+
+function Read-ReplayCanonicalTokenFromWorkerEnv {
+    param([string]$RepoRoot)
+    $path = Join-Path $RepoRoot "worker\.env"
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    foreach ($line in Get-Content -LiteralPath $path -Encoding UTF8) {
+        $t = $line.Trim()
+        if ($t.Length -eq 0 -or $t.StartsWith("#")) { continue }
+        $eq = $t.IndexOf("=")
+        if ($eq -lt 1) { continue }
+        $key = $t.Substring(0, $eq).Trim()
+        if ($key -ne "REPLAY_CANONICAL_TOKEN") { continue }
+        $val = $t.Substring($eq + 1).Trim()
+        if (
+            ($val.Length -ge 2 -and $val.StartsWith("'") -and $val.EndsWith("'")) -or
+            ($val.Length -ge 2 -and $val.StartsWith('"') -and $val.EndsWith('"'))
+        ) {
+            $val = $val.Substring(1, $val.Length - 2)
+        }
+        if ([string]::IsNullOrWhiteSpace($val)) { return $null }
+        return $val
+    }
+    return $null
 }
 
 function Resolve-ReplayStringSetting {
@@ -353,8 +386,18 @@ try {
     $workerHostSource = [string]$resolvedWorkerHost.Source
     $workerPortSource = [string]$resolvedWorkerPort.Source
     $workerTimeoutSource = [string]$resolvedWorkerTimeout.Source
+    $repoRootForToken = Split-Path -Parent $PSScriptRoot
+    if ([string]::IsNullOrWhiteSpace($ReplayCanonicalToken)) {
+        $tokFromWorkerEnv = Read-ReplayCanonicalTokenFromWorkerEnv -RepoRoot $repoRootForToken
+        if (-not [string]::IsNullOrWhiteSpace($tokFromWorkerEnv)) {
+            $ReplayCanonicalToken = $tokFromWorkerEnv
+        }
+    }
     $canonicalTokenSource = Resolve-SettingSource -ParamName "ReplayCanonicalToken" -EnvName "REPLAY_CANONICAL_TOKEN"
-    Write-ReplayLog "config_sources obs_host=$obsHostSource obs_port=$obsPortSource obs_password=$obsPassSource worker_host=$workerHostSource worker_port=$workerPortSource worker_timeout=$workerTimeoutSource canonical_token=$canonicalTokenSource precedence=param>unified>env>default unified_found=$($unifiedSnapshot.Found)"
+    if ($canonicalTokenSource -eq "default" -and -not [string]::IsNullOrWhiteSpace($ReplayCanonicalToken)) {
+        $canonicalTokenSource = "worker_.env"
+    }
+    Write-ReplayLog "config_sources obs_host=$obsHostSource obs_port=$obsPortSource obs_password=$obsPassSource worker_host=$workerHostSource worker_port=$workerPortSource worker_timeout=$workerTimeoutSource canonical_token=$canonicalTokenSource precedence=param>unified>env>worker_.env>default unified_found=$($unifiedSnapshot.Found)"
     if ($workerHostSource -eq "env" -or $workerPortSource -eq "env" -or $workerTimeoutSource -eq "env" -or $workerHostSource -eq "default" -or $workerPortSource -eq "default" -or $workerTimeoutSource -eq "default") {
         Write-ReplayLog "config_fallback_warning replay_trigger_http_* fell_back_past_unified preferred_unified_keys=worker.httpReplayTriggerHost,worker.httpReplayTriggerPort,worker.httpReplayTriggerTimeoutSec"
     }

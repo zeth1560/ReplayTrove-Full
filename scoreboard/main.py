@@ -8,6 +8,7 @@ import tkinter as tk
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+_SCOREBOARD_PROJECT_DIR = Path(__file__).resolve().parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
@@ -24,7 +25,9 @@ from scoreboard.app import ScoreboardApp
 def main() -> None:
     log = logging.getLogger("scoreboard.main")
     try:
-        settings = load_settings()
+        # Always load scoreboard/.env from this script's folder — cwd may be ReplayTrove root or elsewhere.
+        env_file = str(_SCOREBOARD_PROJECT_DIR / ".env")
+        settings = load_settings(env_file if Path(env_file).is_file() else ".env")
     except Exception:
         logging.basicConfig(level=logging.INFO)
         log.exception("Failed to load settings; exiting")

@@ -1,0 +1,8 @@
+﻿{
+    "id":  "03bc02eb405446a8b50d025bd76d6bd9",
+    "action":  "restart",
+    "target":  "obs",
+    "created_at":  "2026-04-30T05:58:21.1119398Z",
+    "source":  "launcher_ui.ps1",
+    "source_action":  "restart_selected_stop"
+}

@@ -28,22 +28,19 @@ rem set "REPLAYTROVE_PAUSE_ON_ERROR=0"
 
 rem Production uses pythonw.exe (no consoles). For visible Python errors use debug:
 rem set "REPLAYTROVE_LAUNCHER_DEBUG=1"
-rem Optional per-app toggles (1=enabled, 0=disabled):
-rem set "REPLAYTROVE_ENABLE_WORKER=1"
-rem set "REPLAYTROVE_ENABLE_ENCODER=1"
+rem Worker, encoder, scoreboard, and OBS always start with the supervisor (not configurable here).
+rem Optional supervisor bootstrap toggles:
 rem set "REPLAYTROVE_ENABLE_CLEANER=1"
 rem Cleaner ownership mode: task_scheduler (recommended) or launcher (legacy behavior).
 rem set "REPLAYTROVE_CLEANER_OWNER_MODE=task_scheduler"
-rem set "REPLAYTROVE_ENABLE_OBS=1"
 rem set "REPLAYTROVE_ENABLE_CONTROL_APP=1"
 rem Legacy: REPLAYTROVE_ENABLE_STREAMDECK (used only if REPLAYTROVE_ENABLE_CONTROL_APP is unset in start_apps.ps1)
 rem set "REPLAYTROVE_ENABLE_STREAMDECK=1"
-rem set "REPLAYTROVE_ENABLE_SCOREBOARD=1"
 rem set "REPLAYTROVE_ENABLE_LAUNCHER_UI=1"
 
-rem Scoreboard screensaver: when Encoder+OBS+Scoreboard are enabled, interactive runs of this
-rem batch keep start_apps.ps1 open and poll scoreboard_status.json — Encoder/OBS stop in
-rem screensaver and restart when active again. Task Scheduler: set REPLAYTROVE_SCOREBOARD_STATUS_WATCH=0
+rem Scoreboard screensaver: interactive runs of this
+rem batch keep start_apps.ps1 open and poll scoreboard_status.json — Encoder/OBS keep running
+rem during screensaver; leaving screensaver can still start them if needed. Task Scheduler: set REPLAYTROVE_SCOREBOARD_STATUS_WATCH=0
 rem unless you want a blocking watch. Optional: REPLAYTROVE_SCOREBOARD_STATUS_JSON, POLL_SEC.
 rem set "REPLAYTROVE_SCOREBOARD_STATUS_WATCH=0"
 rem Launcher keepalive supervision loop (phase 1).

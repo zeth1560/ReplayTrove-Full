@@ -68,6 +68,58 @@ COMMANDS_PENDING_DIR = r"C:\ReplayTrove\commands\encoder\pending"
 COMMANDS_PROCESSED_DIR = r"C:\ReplayTrove\commands\encoder\processed"
 COMMANDS_FAILED_DIR = r"C:\ReplayTrove\commands\encoder\failed"
 
+# Windows: only one long-only operator may run; two processes would both consume
+# the same pending JSON commands and race two FFmpeg captures on one device/file.
+_SINGLETON_MUTEX_NAME = "Local\\ReplayTroveEncoderLongOnlyOperator"
+_SINGLETON_MUTEX_HANDLE: int | None = None
+# Watchdog treats this like a clean "do not respawn" exit (see encoder_watchdog.py).
+_EXIT_DUPLICATE_INSTANCE = 86
+
+
+def _ensure_single_long_only_operator_instance() -> None:
+    """Exit immediately if another operator_long_only process is already running (Windows)."""
+    if os.environ.get("ENCODER_OPERATOR_ALLOW_DUPLICATE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return
+    if sys.platform != "win32":
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    global _SINGLETON_MUTEX_HANDLE
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.argtypes = [
+        wintypes.LPVOID,
+        wintypes.BOOL,
+        wintypes.LPCWSTR,
+    ]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.GetLastError.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    kernel32.SetLastError(0)
+    h = kernel32.CreateMutexW(None, False, _SINGLETON_MUTEX_NAME)
+    err = kernel32.GetLastError()
+    ERROR_ALREADY_EXISTS = 183
+    if err == ERROR_ALREADY_EXISTS:
+        if h:
+            kernel32.CloseHandle(h)
+        print(
+            "encoder: another long-only operator is already running "
+            f"(mutex {_SINGLETON_MUTEX_NAME}). Exiting.",
+            file=sys.stderr,
+        )
+        raise SystemExit(_EXIT_DUPLICATE_INSTANCE)
+    if not h:
+        return
+    _SINGLETON_MUTEX_HANDLE = int(h)
+
 # Throttle noisy ffmpeg `\r` progress spam at DEBUG; snapshots use INFO on a wall-clock interval.
 _FFMPEG_PROGRESS_SNAPSHOT_INTERVAL_SEC = 30.0
 _FFMPEG_PROGRESS_DEBUG_THROTTLE_SEC = 1.5
@@ -1773,6 +1825,7 @@ class LongOnlyApp:
 
 
 def main() -> None:
+    _ensure_single_long_only_operator_instance()
     run_id = new_encoder_run_id()
     try:
         settings = load_encoder_settings()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,6 +37,60 @@ _BOOL_READY_KEYS = (
     "long_recording_available",
     "rolling_buffer_applicable",
 )
+
+
+def _try_read_encoder_appliance_ready_once(
+    settings: Settings,
+) -> tuple[bool, str | None]:
+    """Single read attempt. Returns (True, None) or (False, short reason for operators/logs)."""
+    path = Path(settings.encoder_state_path)
+    if not path.is_file():
+        return False, f"no_file:{path}"
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except OSError as e:
+        return False, f"os_error:{e}"
+    except (UnicodeError, json.JSONDecodeError) as e:
+        return False, f"json_error:{e}"
+    if not isinstance(data, dict):
+        return False, "payload_not_object"
+    if _is_payload_stale(data.get("updated_at"), settings.encoder_status_stale_seconds):
+        return (
+            False,
+            f"stale:updated_at={data.get('updated_at')!r} "
+            f"threshold_sec={settings.encoder_status_stale_seconds}",
+        )
+    if not _payload_indicates_ready(data):
+        st = str(data.get("state", "")).strip().lower()
+        return False, f"not_ready:state={st!r} encoder_ready={data.get('encoder_ready')!r}"
+    return True, None
+
+
+def read_encoder_appliance_ready(settings: Settings) -> bool:
+    """Same readiness rules as :class:`EncoderStatusOverlay` (encoder_state.json + stale window).
+
+    Retries briefly: on Windows another process may be replacing the file atomically, and a
+    single read can occasionally fail or race with the writer.
+    """
+    last_reason = "unknown"
+    for attempt in range(3):
+        ok, reason = _try_read_encoder_appliance_ready_once(settings)
+        if ok:
+            return True
+        last_reason = reason or "unknown"
+        if attempt < 2:
+            time.sleep(0.02)
+    _LOG.debug("encoder_appliance_ready false after retries: %s", last_reason)
+    return False
+
+
+def explain_encoder_appliance_ready(settings: Settings) -> tuple[bool, str]:
+    """Diagnostic: one read, no retries — exact failure reason for scripts/support."""
+    ok, reason = _try_read_encoder_appliance_ready_once(settings)
+    if ok:
+        return True, "ok"
+    return False, reason or "unknown"
 
 
 class EncoderStatusOverlay:
@@ -149,14 +204,7 @@ class EncoderStatusOverlay:
         self._schedule_poll()
 
     def _read_want_ready(self) -> bool:
-        path = Path(self._settings.encoder_state_path)
-        if not path.is_file():
-            return False
-        raw = path.read_text(encoding="utf-8")
-        data = json.loads(raw)
-        if _is_payload_stale(data.get("updated_at"), self._settings.encoder_status_stale_seconds):
-            return False
-        return _payload_indicates_ready(data)
+        return read_encoder_appliance_ready(self._settings)
 
     def _apply_if_changed(self, want_ready: bool) -> None:
         if self._item_a is not None and self._last_shown_ready == want_ready:
@@ -261,6 +309,10 @@ def _path_to_rgb_photo(path: str) -> ImageTk.PhotoImage | None:
 def _payload_indicates_ready(data: dict) -> bool:
     """Match encoder_state.json schema v1: booleans + state, with terminal states overriding."""
     state = str(data.get("state", "")).strip().lower()
+    # Encoder publishes ``starting`` / ``restarting`` with all readiness booleans false on purpose;
+    # still must not flash the unavailable graphic (see encoder.encoder_state module docstring).
+    if state in ("starting", "restarting"):
+        return True
     if state in _UNAVAILABLE_STATES:
         return False
     present_flags = [data[k] for k in _BOOL_READY_KEYS if k in data]

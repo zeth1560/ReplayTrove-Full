@@ -174,3 +174,26 @@ class S3Uploader:
                 },
             )
             raise
+
+
+def s3_uploader_from_worker_settings(
+    settings: Any,
+    *,
+    bucket: str,
+    label: str,
+) -> S3Uploader:
+    """Build an uploader using worker retry/multipart settings (shared credentials)."""
+    return S3Uploader(
+        bucket=bucket,
+        region=settings.aws_region,
+        access_key_id=settings.aws_access_key_id,
+        secret_access_key=settings.aws_secret_access_key,
+        upload_retries=settings.upload_retries,
+        upload_retry_delay_seconds=settings.upload_retry_delay_seconds,
+        label=label,
+        multipart_threshold_bytes=settings.s3_multipart_threshold_bytes,
+        multipart_chunksize_bytes=settings.s3_multipart_chunksize_bytes,
+        network_retry_base_seconds=settings.network_retry_base_seconds,
+        network_retry_max_seconds=settings.network_retry_max_seconds,
+        network_retry_jitter_fraction=settings.network_retry_jitter_fraction,
+    )

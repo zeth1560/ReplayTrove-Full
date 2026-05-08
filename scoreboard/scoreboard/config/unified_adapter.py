@@ -18,9 +18,11 @@ class ScoreboardUnifiedSnapshot:
     scoreboard_section_loaded: bool
     obsffmpeg_section_loaded: bool
     worker_section_loaded: bool
+    pickle_planner_section_loaded: bool
     scoreboard: dict[str, Any]
     obsffmpeg: dict[str, Any]
     worker: dict[str, Any]
+    pickle_planner: dict[str, Any]
     error: str | None = None
 
 
@@ -41,9 +43,11 @@ def load_scoreboard_unified_snapshot() -> ScoreboardUnifiedSnapshot:
             scoreboard_section_loaded=False,
             obsffmpeg_section_loaded=False,
             worker_section_loaded=False,
+            pickle_planner_section_loaded=False,
             scoreboard={},
             obsffmpeg={},
             worker={},
+            pickle_planner={},
         )
 
     try:
@@ -59,9 +63,11 @@ def load_scoreboard_unified_snapshot() -> ScoreboardUnifiedSnapshot:
             scoreboard_section_loaded=False,
             obsffmpeg_section_loaded=False,
             worker_section_loaded=False,
+            pickle_planner_section_loaded=False,
             scoreboard={},
             obsffmpeg={},
             worker={},
+            pickle_planner={},
             error=str(exc),
         )
 
@@ -74,6 +80,9 @@ def load_scoreboard_unified_snapshot() -> ScoreboardUnifiedSnapshot:
         else {}
     )
     worker = data.get("worker") if isinstance(data.get("worker"), dict) else {}
+    pickle_planner = (
+        data.get("picklePlanner") if isinstance(data.get("picklePlanner"), dict) else {}
+    )
     schema_version = data.get("schemaVersion")
     if isinstance(schema_version, bool):
         schema_version = None
@@ -88,7 +97,9 @@ def load_scoreboard_unified_snapshot() -> ScoreboardUnifiedSnapshot:
         scoreboard_section_loaded=bool(scoreboard),
         obsffmpeg_section_loaded=bool(obsffmpeg),
         worker_section_loaded=bool(worker),
+        pickle_planner_section_loaded=bool(pickle_planner),
         scoreboard=scoreboard,
         obsffmpeg=obsffmpeg,
         worker=worker,
+        pickle_planner=pickle_planner,
     )
